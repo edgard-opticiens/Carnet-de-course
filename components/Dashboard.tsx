@@ -7,7 +7,7 @@ import PaceChart from "./charts/PaceChart";
 import ZonesChart from "./charts/ZonesChart";
 import RacesTable from "./RacesTable";
 import WorkoutCards from "./WorkoutCards";
-import RampChart from "./RampChart";
+import RecordsGrid from "./RecordsGrid";
 import GoalTimeline from "./GoalTimeline";
 
 function formatDate(iso: string): string {
@@ -130,12 +130,27 @@ export default function Dashboard({
       <section>
         <div className="wrap">
           <div className="section-head">
+            <h2 className="section-title display">Records</h2>
+            <span className="section-note">meilleur temps équivalent par distance</span>
+          </div>
+          <p className="lede">
+            Calculés à partir de tes sorties les plus proches de chaque distance (±15 %), ramenées à
+            la distance exacte avec la formule de Riegel quand ce n&rsquo;est pas déjà un chrono de
+            course.
+          </p>
+          <RecordsGrid records={data.records} />
+        </div>
+      </section>
+
+      <section>
+        <div className="wrap">
+          <div className="section-head">
             <h2 className="section-title display">Zones cardiaques de référence</h2>
             <span className="section-note">telles que configurées sur Strava</span>
           </div>
           <div className="zones-wrap">
             <div className="card">
-              <ZonesChart zones={data.zones} />
+              <ZonesChart zones={data.zones} zonePaces={data.zonePaces} />
             </div>
             <div className="card">
               <p style={{ margin: 0, fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6 }}>
@@ -172,8 +187,8 @@ export default function Dashboard({
       <section>
         <div className="wrap">
           <div className="section-head">
-            <h2 className="section-title display">Quatre sorties pour progresser</h2>
-            <span className="section-note">à introduire dans cet ordre</span>
+            <h2 className="section-title display">Sorties pour progresser</h2>
+            <span className="section-note">adaptées à ta forme actuelle</span>
           </div>
           <p className="lede">
             Des formats concrets calés sur tes propres zones de fréquence cardiaque, avec une
@@ -186,31 +201,25 @@ export default function Dashboard({
       <section>
         <div className="wrap">
           <div className="section-head">
-            <h2 className="section-title display">Reconstruire le volume, 8 semaines</h2>
-            <span className="section-note">
-              départ ≈ {data.recommendations.rampWeeks[0]} km/semaine
-            </span>
+            <h2 className="section-title display">Trajectoire vers un objectif</h2>
+            <span className="section-note">programme généré à partir de tes stats</span>
           </div>
           <p className="lede">
-            Une progression calculée à partir de ton rythme actuel, sans retour brutal à un pic
-            passé.
+            Renseigne ta prochaine échéance pour obtenir un plan semaine par semaine, calé sur ton
+            volume actuel et une estimation de faisabilité par rapport à ta forme du moment.
           </p>
           <div className="card">
-            <RampChart
-              weeks={data.recommendations.rampWeeks}
-              fartlekFromWeek={data.recommendations.fartlekFromWeek}
+            <GoalTimeline
+              currentWeeklyKm={data.currentWeeklyKm}
+              raceEstimateRef={
+                data.raceEstimates
+                  ? {
+                      refDistKm: data.raceEstimates.refDistKm,
+                      refTimeMin: data.raceEstimates.refTimeMin,
+                    }
+                  : null
+              }
             />
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div className="wrap">
-          <div className="section-head">
-            <h2 className="section-title display">Trajectoire vers un objectif</h2>
-          </div>
-          <div className="card">
-            <GoalTimeline />
           </div>
         </div>
       </section>

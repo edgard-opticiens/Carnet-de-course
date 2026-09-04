@@ -9,7 +9,13 @@ const EFFORT5_VARS = [
   "var(--effort5-5)",
 ];
 
-export default function ZonesChart({ zones }: { zones: ZoneBound[] }) {
+export default function ZonesChart({
+  zones,
+  zonePaces,
+}: {
+  zones: ZoneBound[];
+  zonePaces?: (string | null)[];
+}) {
   if (zones.length === 0) {
     return (
       <p style={{ color: "var(--ink-muted)", fontSize: 14 }}>
@@ -26,6 +32,7 @@ export default function ZonesChart({ zones }: { zones: ZoneBound[] }) {
           hi = z.max ?? maxShow;
         const pct = ((hi - lo) / maxShow) * 100;
         const leftPct = (lo / maxShow) * 100;
+        const pace = zonePaces?.[i] ?? null;
         return (
           <div className="zone-row" key={i}>
             <div className="zone-name">{LABELS5[i] ?? `Z${i + 1}`}</div>
@@ -41,8 +48,11 @@ export default function ZonesChart({ zones }: { zones: ZoneBound[] }) {
               />
             </div>
             <div className="zone-range">
-              {lo}
-              {z.max ? `–${z.max}` : "+"} bpm
+              <div>
+                {lo}
+                {z.max ? `–${z.max}` : "+"} bpm
+              </div>
+              <div className="zone-pace">{pace ?? "—"}</div>
             </div>
           </div>
         );

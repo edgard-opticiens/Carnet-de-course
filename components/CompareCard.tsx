@@ -1,6 +1,7 @@
 "use client";
 import { useTooltip } from "./TooltipContext";
 import type { DashboardData } from "@/lib/analysis";
+import RaceEstimatesCard from "./RaceEstimatesCard";
 
 export default function CompareCard({ data }: { data: DashboardData }) {
   const { compare, weeks16 } = data;
@@ -64,6 +65,9 @@ export default function CompareCard({ data }: { data: DashboardData }) {
               </div>
             </div>
           </div>
+        </div>
+        <div style={{ marginTop: 20 }}>
+          <RaceEstimatesCard raceEstimates={data.raceEstimates} />
         </div>
       </div>
     </section>

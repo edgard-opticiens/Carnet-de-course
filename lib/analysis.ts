@@ -36,7 +36,10 @@ export interface ZoneBound {
   max: number | null;
 }
 
+export type WorkoutKey = "ef" | "sortieLongue" | "fartlek" | "fractionne" | "cotes";
+
 export interface WorkoutCard {
+  key: WorkoutKey;
   n: number;
   title: string;
   zoneLabel: "aerobie" | "tempo" | "seuil" | "maximal";
@@ -51,8 +54,6 @@ export interface Recommendations {
   phase: "reconstruction" | "maintien" | "progression";
   phaseLabel: string;
   phaseNote: string;
-  rampWeeks: number[];
-  fartlekFromWeek: number;
   workouts: WorkoutCard[];
 }
 
@@ -78,6 +79,33 @@ export interface LastRunReview {
   nextWorkoutRationale: string;
 }
 
+export interface RaceEstimate {
+  key: string;
+  label: string;
+  km: number;
+  timeLabel: string;
+  paceLabel: string;
+}
+
+export interface RaceEstimates {
+  estimates: RaceEstimate[];
+  basisLabel: string;
+  marathonCaveat: string | null;
+  refDistKm: number;
+  refTimeMin: number;
+}
+
+export interface RecordEntry {
+  key: string;
+  label: string;
+  km: number;
+  timeLabel: string | null;
+  paceLabel: string | null;
+  date: string | null;
+  sourceLabel: string | null;
+  isRace: boolean;
+}
+
 export interface DashboardData {
   athleteName: string;
   totalDistKm: number;
@@ -89,15 +117,26 @@ export interface DashboardData {
   monthly: MonthlyPoint[];
   weeks16: { runs: number; km: number }[];
   compare: { prevKm: number; prevRuns: number; currKm: number; currRuns: number };
+  currentWeeklyKm: number;
   paceTrend: PaceTrendPoint[];
   races: RaceEntry[];
   zones: ZoneBound[];
+  zonePaces: (string | null)[];
   hasHeartRateData: boolean;
   recommendations: Recommendations;
   lastRun: LastRunReview | null;
+  raceEstimates: RaceEstimates | null;
+  records: RecordEntry[];
 }
 
 const MS_DAY = 86400000;
+
+const STANDARD_RACE_DISTANCES: { key: string; label: string; km: number }[] = [
+  { key: "5k", label: "5 km", km: 5 },
+  { key: "10k", label: "10 km", km: 10 },
+  { key: "half", label: "Semi-marathon", km: 21.0975 },
+  { key: "marathon", label: "Marathon", km: 42.195 },
+];
 
 function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -209,6 +248,7 @@ export function buildDashboardData(
     prevKm: Math.round(prev8.reduce((s, a) => s + a.distance / 1000, 0) * 10) / 10,
     prevRuns: prev8.length,
   };
+  const currentWeeklyKm = Math.round((compare.currKm / 8) * 10) / 10;
 
   // ---- zones FC ----
   const zones: ZoneBound[] = (zonesRaw?.heart_rate?.zones ?? []).map((z) => ({
@@ -272,12 +312,31 @@ export function buildDashboardData(
     isRace: a.workout_type === 1,
   }));
 
-  // ---- recommandations générées par règles ----
+  // ---- allures réellement tenues par zone de FC ----
   const paceByZone = buildPaceByZone(sorted, zones);
-  const recommendations = buildRecommendations(compare, paceTrend, zones, paceByZone);
+  const zonePaces: (string | null)[] = zones.map((_, i) =>
+    formatPaceRange(paceRangeForZones(paceByZone, [i + 1]))
+  );
+
+  // ---- dénivelé récent, pour savoir si le côtes a du sens dans les sorties proposées ----
+  const recentForElev = sorted.slice(-12);
+  const avgElevPerKmRecent =
+    recentForElev.length > 0
+      ? recentForElev.reduce(
+          (s, a) => s + a.total_elevation_gain / Math.max(a.distance / 1000, 0.1),
+          0
+        ) / recentForElev.length
+      : 0;
+
+  // ---- recommandations générées par règles ----
+  const recommendations = buildRecommendations(compare, zones, paceByZone, avgElevPerKmRecent);
 
   // ---- compte rendu de la toute dernière sortie ----
   const lastRun = buildLastRunReview(sorted, zones, recommendations);
+
+  // ---- estimations de temps de course et records ----
+  const raceEstimates = buildRaceEstimates(sorted, now);
+  const records = buildRecords(sorted);
 
   return {
     athleteName,
@@ -290,12 +349,16 @@ export function buildDashboardData(
     monthly,
     weeks16,
     compare,
+    currentWeeklyKm,
     paceTrend,
     races,
     zones,
+    zonePaces,
     hasHeartRateData,
     recommendations,
     lastRun,
+    raceEstimates,
+    records,
   };
 }
 
@@ -331,6 +394,7 @@ function buildLastRunReview(
   const lastDistKm = last.distance / 1000;
   const lastPace = paceFromSpeed(last.average_speed);
   const typeLabel = workoutTypeLabel(last.workout_type);
+  const isEasyContext = typeLabel === "sortie" || typeLabel === "sortie longue";
 
   // Bassin de comparaison : sorties de distance comparable parmi les 20 précédentes,
   // sinon repli sur les 8 dernières sorties toutes distances confondues.
@@ -378,7 +442,12 @@ function buildLastRunReview(
     const paceDeltaPct = ((lastPace - avgBaselinePace) / avgBaselinePace) * 100;
     const climbedMore =
       avgBaselineElevPerKm !== null && lastElevPerKm > avgBaselineElevPerKm * 1.5;
-    if (paceDeltaPct <= -3) {
+    const tooHardForEasy = isEasyContext && hrZoneIdx !== null && hrZoneIdx >= 3;
+    if (paceDeltaPct <= -3 && tooHardForEasy) {
+      watchouts.push(
+        `Allure ${formatPace(lastPace)} : plus rapide que ta moyenne récente, mais avec une FC en zone ${hrZoneIdx} — sur une sortie censée rester facile, mieux vaut ralentir pour garder la FC basse plutôt que gagner quelques secondes au kilomètre.`
+      );
+    } else if (paceDeltaPct <= -3) {
       positives.push(
         `Allure ${formatPace(lastPace)} : plus rapide que ta moyenne récente sur une distance comparable (${formatPace(
           avgBaselinePace
@@ -394,7 +463,7 @@ function buildLastRunReview(
       watchouts.push(
         `Allure ${formatPace(lastPace)} : environ ${Math.round(
           paceDeltaPct
-        )} % plus lent que ta moyenne récente sur une distance comparable (${formatPace(avgBaselinePace)}).`
+        )} % plus lent que ta moyenne récente sur une distance comparable (${formatPace(avgBaselinePace)}). Si ce n'est pas expliqué par la fatigue ou le terrain, garde un œil dessus la prochaine fois.`
       );
     }
   }
@@ -417,7 +486,6 @@ function buildLastRunReview(
   }
 
   if (hrZoneIdx !== null) {
-    const isEasyContext = typeLabel === "sortie" || typeLabel === "sortie longue";
     if (isEasyContext && hrZoneIdx >= 4) {
       watchouts.push(
         `FC moyenne de ${Math.round(
@@ -470,34 +538,45 @@ function buildLastRunReview(
     restAdvice = "Effort modéré : tu peux enchaîner normalement, pas de repos particulier nécessaire.";
   }
 
-  // ---- proposition pour la sortie suivante, à partir des 4 formats déjà recommandés ----
-  let nextIdx = 0;
+  // ---- proposition pour la sortie suivante, choisie dans les formats actuellement adaptés ----
+  const lastQuality = [...prevRuns].reverse().find((a) => a.workout_type === 3);
+  const daysSinceQuality = lastQuality
+    ? (new Date(last.start_date_local).getTime() - new Date(lastQuality.start_date_local).getTime()) /
+      MS_DAY
+    : null;
+
+  let desiredKey: WorkoutKey;
   let nextWorkoutRationale: string;
   if (typeLabel === "course") {
-    nextIdx = 0;
+    desiredKey = "ef";
     nextWorkoutRationale =
       "Après une course, on repart doucement : une sortie fondamentale bien facile avant de retrouver du rythme.";
   } else if (hrZoneIdx !== null && hrZoneIdx >= 4) {
-    nextIdx = 0;
+    desiredKey = "ef";
     nextWorkoutRationale =
       "Cette sortie était soutenue : la prochaine gagne à rester très facile pour encaisser l'effort.";
   } else if (
     typeLabel === "sortie longue" ||
     (maxRecentDistanceKm !== null && lastDistKm > maxRecentDistanceKm * 1.2)
   ) {
-    nextIdx = 0;
+    desiredKey = "ef";
     nextWorkoutRationale =
       "Après cette sortie longue, priorité à la récupération avant la prochaine séance de qualité.";
   } else if (typeLabel === "séance") {
-    nextIdx = 2;
+    desiredKey = "sortieLongue";
     nextWorkoutRationale =
       "Après une séance, la sortie longue reste l'occasion de construire de l'endurance à effort contrôlé.";
-  } else {
-    nextIdx = 1;
+  } else if (daysSinceQuality === null || daysSinceQuality > 9) {
+    desiredKey = "fractionne";
     nextWorkoutRationale =
-      "Cette sortie facile est une bonne base pour introduire un peu de rythme à la prochaine séance.";
+      "Pas de séance structurée depuis un moment : cette sortie facile est une bonne base pour réintroduire du fractionné.";
+  } else {
+    desiredKey = "fartlek";
+    nextWorkoutRationale =
+      "Cette sortie facile est une bonne base pour varier le stimulus avec un fartlek avant la prochaine séance structurée.";
   }
-  const nextWorkout = recommendations.workouts[nextIdx] ?? recommendations.workouts[0] ?? null;
+  const nextWorkout =
+    recommendations.workouts.find((w) => w.key === desiredKey) ?? recommendations.workouts[0] ?? null;
 
   return {
     id: last.id,
@@ -566,11 +645,16 @@ function formatPaceRange(range: { lo: number; hi: number } | null): string | nul
   return `${fmtPaceValue(range.lo)} à ${fmtPaceValue(range.hi)}/km`;
 }
 
+/** Essaie d'abord une zone précise, puis élargit si l'échantillon est trop faible pour être fiable. */
+function bestPaceRange(byZone: Map<number, number[]>, primary: number[], fallback: number[]): string | null {
+  return formatPaceRange(paceRangeForZones(byZone, primary)) ?? formatPaceRange(paceRangeForZones(byZone, fallback));
+}
+
 function buildRecommendations(
   compare: { prevKm: number; currKm: number },
-  paceTrend: PaceTrendPoint[],
   zones: ZoneBound[],
-  paceByZone: Map<number, number[]>
+  paceByZone: Map<number, number[]>,
+  avgElevPerKmRecent: number
 ): Recommendations {
   const prevWeekly = compare.prevKm / 8;
   const currWeekly = compare.currKm / 8;
@@ -588,32 +672,20 @@ function buildRecommendations(
 
   const phaseNote =
     phase === "reconstruction"
-      ? "Le volume récent est nettement en dessous de la période précédente : mieux vaut reconstruire par paliers plutôt que revenir directement au rythme d'avant."
+      ? "Le volume récent est nettement en dessous de la période précédente : on se concentre sur l'endurance de base, l'intensité attendra que le volume soit reconstruit."
       : phase === "progression"
-      ? "Le volume est déjà en hausse : la progression proposée reste mesurée pour ne pas accumuler la fatigue trop vite."
-      : "Le volume est stable : une progression douce suffit pour continuer à avancer sans se blesser.";
+      ? "Le volume est déjà en hausse : la palette de sorties s'élargit, mais reste mesurée pour ne pas accumuler la fatigue trop vite."
+      : "Le volume est stable : c'est le bon moment pour travailler toutes les allures, du fondamental à la vitesse.";
 
-  const growth = phase === "reconstruction" ? 0.1 : phase === "progression" ? 0.05 : 0.07;
-  const start = Math.max(currWeekly, 6);
-  const rampWeeks: number[] = [];
-  let w = start;
-  for (let i = 0; i < 8; i++) {
-    rampWeeks.push(Math.round(w * 2) / 2);
-    w *= 1 + growth;
-  }
-  const fartlekFromWeek = phase === "reconstruction" ? 3 : 1;
+  const zoneHint = zones.length >= 4;
+  const easyRange = bestPaceRange(paceByZone, [1, 2], [1, 2]);
+  const fartlekRange = bestPaceRange(paceByZone, [3], [3, 4]);
+  const fractionneRange = bestPaceRange(paceByZone, [4], [3, 4]);
 
-  // Allures grossièrement calées sur les zones réelles, si suffisamment de points.
-  const zoneHint = zones.length >= 4 && paceTrend.length >= 4;
-
-  // Allures personnalisées : dérivées des allures que le coureur a réellement tenues,
-  // à chaque fois que sa FC est tombée dans la zone visée par le format proposé.
-  const easyRange = formatPaceRange(paceRangeForZones(paceByZone, [1, 2]));
-  const fastRange = formatPaceRange(paceRangeForZones(paceByZone, [3, 4]));
-
-  const workouts: WorkoutCard[] = [
+  const pool: WorkoutCard[] = [
     {
-      n: 1,
+      key: "ef",
+      n: 0,
       title: "Sortie fondamentale",
       zoneLabel: "aerobie",
       freq: "2 à 3 fois / semaine",
@@ -625,17 +697,8 @@ function buildRecommendations(
       why: "Le socle de toute reprise ou progression : construire le volume aérobie sans stress supplémentaire.",
     },
     {
-      n: 2,
-      title: "Fartlek",
-      zoneLabel: "seuil",
-      freq: `1 fois / semaine${phase === "reconstruction" ? ", à partir de la semaine 3-4" : ""}`,
-      duree: "25 à 30 min dont 6 à 8 x 1 min plus soutenu / 2 min très facile",
-      cible: "Portions rapides en Z3-Z4, à la sensation plutôt qu'au chrono",
-      paceHint: fastRange ? `portions rapides : ${fastRange}` : null,
-      why: "Un format simple pour réintroduire du rythme sans le choc d'un fractionné classique.",
-    },
-    {
-      n: 3,
+      key: "sortieLongue",
+      n: 0,
       title: "Sortie longue progressive",
       zoneLabel: "aerobie",
       freq: "1 fois / semaine, la plus longue",
@@ -645,16 +708,322 @@ function buildRecommendations(
       why: "Le levier n°1 pour bâtir un plancher aérobie avant tout travail de dénivelé ou de vitesse.",
     },
     {
-      n: 4,
+      key: "fartlek",
+      n: 0,
+      title: "Fartlek",
+      zoneLabel: "tempo",
+      freq: "1 fois / semaine",
+      duree: "25 à 30 min dont 6 à 8 x 1 min plus soutenu / 2 min très facile",
+      cible: "Portions rapides en Z3, à la sensation plutôt qu'au chrono",
+      paceHint: fartlekRange ? `portions rapides : ${fartlekRange}` : null,
+      why: "Un format simple pour réintroduire du rythme sans le choc d'un fractionné classique.",
+    },
+    {
+      key: "fractionne",
+      n: 0,
+      title: "Fractionné",
+      zoneLabel: "seuil",
+      freq: "1 fois / semaine",
+      duree:
+        phase === "progression"
+          ? "8 à 12 x 400 m (récup. 200 m trot), ou 5 à 6 x 1000 m (récup. 2-3 min)"
+          : "6 à 8 x 400 m (récup. 200 m trot)",
+      cible: "Z4, allure nettement plus rapide que le fartlek, cette fois au chrono",
+      paceHint: fractionneRange ? `répétitions : ${fractionneRange}` : null,
+      why: "Un stimulus plus précis que le fartlek pour développer la VMA et l'économie de course.",
+    },
+    {
+      key: "cotes",
+      n: 0,
       title: "Côtes / dénivelé",
       zoneLabel: "maximal",
-      freq: "1 fois / semaine dans le bloc spécifique avant un objectif",
+      freq: "1 fois / semaine",
       duree: "6 à 10 répétitions de côtes de 200 à 400 m, retour en footing",
       cible: "Montée en Z4-Z5, récupération complète en descente",
       paceHint: "non pertinent en côtes — vise l'effort et la FC, pas le chrono",
-      why: "Prépare spécifiquement le dénivelé si un objectif trail ou une course vallonnée approche.",
+      why: "Tes sorties récentes contiennent du dénivelé : ce format prépare spécifiquement la capacité à grimper.",
     },
   ];
 
-  return { phase, phaseLabel, phaseNote, rampWeeks, fartlekFromWeek, workouts };
+  // Le choix des sorties proposées s'adapte à la phase de forme actuelle : on ne propose pas de
+  // travail de vitesse tant que le volume de base n'est pas reconstruit, et les côtes n'ont
+  // d'intérêt que si le terrain récent en comporte déjà.
+  let selectedKeys: WorkoutKey[];
+  if (phase === "reconstruction") {
+    selectedKeys = ["ef", "sortieLongue"];
+  } else {
+    selectedKeys = ["ef", "sortieLongue", "fartlek", "fractionne"];
+  }
+  if (phase !== "reconstruction" && avgElevPerKmRecent >= 12) {
+    selectedKeys.push("cotes");
+  }
+
+  const workouts = pool
+    .filter((w) => selectedKeys.includes(w.key))
+    .map((w, i) => ({ ...w, n: i + 1 }));
+
+  return { phase, phaseLabel, phaseNote, workouts };
+}
+
+export function riegelProjectTime(
+  refDistKm: number,
+  refTimeMin: number,
+  targetDistKm: number,
+  exponent = 1.06
+): number {
+  if (refDistKm <= 0 || refTimeMin <= 0 || targetDistKm <= 0) return 0;
+  return refTimeMin * Math.pow(targetDistKm / refDistKm, exponent);
+}
+
+/**
+ * Estime les temps sur 5, 10, semi et marathon à partir de la meilleure performance récente
+ * (formule de Riegel), avec une prudence explicite sur le marathon quand aucune sortie longue
+ * ne vient étayer l'extrapolation.
+ */
+function buildRaceEstimates(sorted: StravaActivity[], now: Date): RaceEstimates | null {
+  const cutoff = now.getTime() - 120 * MS_DAY;
+  const candidates = sorted.filter(
+    (a) => a.distance >= 3000 && a.moving_time > 0 && new Date(a.start_date_local).getTime() >= cutoff
+  );
+  if (candidates.length === 0) return null;
+
+  let best: { a: StravaActivity; predicted10k: number } | null = null;
+  for (const a of candidates) {
+    const distKm = a.distance / 1000;
+    const timeMin = a.moving_time / 60;
+    const predicted10k = riegelProjectTime(distKm, timeMin, 10);
+    if (!best || predicted10k < best.predicted10k) best = { a, predicted10k };
+  }
+  if (!best) return null;
+
+  const refDistKm = best.a.distance / 1000;
+  const refTimeMin = best.a.moving_time / 60;
+  const refDate = best.a.start_date_local.slice(0, 10);
+  const refPace = refTimeMin / refDistKm;
+  const longestRecentKm = Math.max(...candidates.map((a) => a.distance / 1000));
+
+  const estimates: RaceEstimate[] = STANDARD_RACE_DISTANCES.map((d) => {
+    let timeMin = riegelProjectTime(refDistKm, refTimeMin, d.km);
+    if (d.key === "marathon" && longestRecentKm < 15) {
+      timeMin *= 1.04; // pénalité de prudence : pas de sortie longue récente pour valider l'endurance spécifique
+    }
+    return {
+      key: d.key,
+      label: d.label,
+      km: d.km,
+      timeLabel: formatDuration(Math.round(timeMin * 60)),
+      paceLabel: formatPace(timeMin / d.km),
+    };
+  });
+
+  const marathonCaveat =
+    longestRecentKm < 15
+      ? `Estimation prudente : ta sortie la plus longue récemment fait ${longestRecentKm.toFixed(
+          1
+        )} km — sans sortie longue proche de la distance marathon, cette projection reste théorique.`
+      : longestRecentKm < 25
+      ? "Estimation à confirmer par quelques sorties longues supplémentaires à l'approche de l'objectif."
+      : null;
+
+  return {
+    estimates,
+    basisLabel: `Basé sur ta sortie du ${new Date(refDate).toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "long",
+    })} (${refDistKm.toFixed(1)} km à ${formatPace(refPace)}).`,
+    marathonCaveat,
+    refDistKm,
+    refTimeMin,
+  };
+}
+
+export interface GoalPlanInput {
+  eventDate: Date;
+  distanceKm: number;
+  elevationGainM: number;
+  targetTimeSec: number | null;
+  sessionsPerWeek: number;
+  now: Date;
+  currentWeeklyKm: number;
+  raceEstimateRef: { refDistKm: number; refTimeMin: number } | null;
+}
+
+export interface GoalPlanWeek {
+  weekIndex: number;
+  startDate: string;
+  km: number;
+  sessions: string[];
+  phase: "base" | "specifique" | "affutage";
+}
+
+export interface GoalFeasibility {
+  verdict: string;
+  note: string;
+}
+
+export interface GoalPlan {
+  totalWeeks: number;
+  weeks: GoalPlanWeek[];
+  feasibility: GoalFeasibility | null;
+  peakWeeklyKm: number;
+}
+
+function buildWeekSessions(n: number, phase: GoalPlanWeek["phase"], hilly: boolean): string[] {
+  const sessions: string[] = [];
+  if (n <= 0) return sessions;
+  sessions.push("Sortie longue");
+  if (n >= 2) sessions.push("EF");
+  if (n >= 3) {
+    if (phase === "base") sessions.push("Fartlek");
+    else if (phase === "specifique") sessions.push(hilly ? "Côtes" : "Fractionné");
+    else sessions.push("EF vive");
+  }
+  if (n >= 4) sessions.push("EF");
+  if (n >= 5) sessions.push(phase === "specifique" && hilly ? "Fractionné" : "EF");
+  if (n >= 6) sessions.push("EF");
+  return sessions.slice(0, n);
+}
+
+/**
+ * Génère un programme semaine par semaine jusqu'à la date de l'objectif, à partir du volume
+ * hebdomadaire actuel : montée progressive plafonnée, bloc spécifique (côtes ou fractionné selon
+ * le terrain), affûtage sur les deux dernières semaines. Une estimation de faisabilité de
+ * l'objectif de temps est ajoutée quand une performance de référence récente est disponible.
+ */
+export function buildGoalPlan(input: GoalPlanInput): GoalPlan | null {
+  const {
+    eventDate,
+    distanceKm,
+    elevationGainM,
+    targetTimeSec,
+    sessionsPerWeek,
+    now,
+    currentWeeklyKm,
+    raceEstimateRef,
+  } = input;
+  if (distanceKm <= 0 || sessionsPerWeek <= 0) return null;
+  const msPerWeek = 7 * MS_DAY;
+  const totalWeeksRaw = (eventDate.getTime() - now.getTime()) / msPerWeek;
+  if (totalWeeksRaw < 1) return null;
+  const totalWeeks = Math.min(78, Math.max(1, Math.floor(totalWeeksRaw)));
+
+  // Volume de pic avant affûtage : repère empirique courant, fonction de la distance visée.
+  const peakFactor = distanceKm >= 35 ? 2.4 : distanceKm >= 18 ? 2.6 : distanceKm >= 8 ? 3.2 : 4;
+  const peakWeeklyKm = Math.max(currentWeeklyKm * 1.15, distanceKm * peakFactor, 15);
+
+  const taperWeeks = totalWeeks <= 3 ? 0 : Math.min(2, Math.max(1, Math.floor(totalWeeks * 0.12)));
+  const buildWeeks = Math.max(1, totalWeeks - taperWeeks);
+
+  const startKm = Math.max(Math.min(currentWeeklyKm, peakWeeklyKm), distanceKm * 0.6 * 0.5, 8);
+  let growth = buildWeeks > 1 ? Math.pow(peakWeeklyKm / startKm, 1 / (buildWeeks - 1)) - 1 : 0;
+  growth = Math.min(Math.max(growth, 0), 0.08);
+
+  const specificStartWeek = Math.max(1, buildWeeks - Math.round(buildWeeks * 0.35));
+  const hilly = elevationGainM > 0 && elevationGainM / distanceKm >= 12;
+
+  const weeks: GoalPlanWeek[] = [];
+  let km = startKm;
+  for (let i = 1; i <= totalWeeks; i++) {
+    const weekStartDate = new Date(now);
+    weekStartDate.setDate(weekStartDate.getDate() + (i - 1) * 7);
+    let phase: GoalPlanWeek["phase"];
+    let weekKm: number;
+    if (i > buildWeeks) {
+      phase = "affutage";
+      const taperIdx = i - buildWeeks;
+      const frac = 1 - (taperIdx / Math.max(taperWeeks, 1)) * 0.55;
+      weekKm = peakWeeklyKm * Math.max(0.4, frac);
+    } else {
+      phase = i >= specificStartWeek ? "specifique" : "base";
+      weekKm = km;
+      km *= 1 + growth;
+    }
+    weeks.push({
+      weekIndex: i,
+      startDate: weekStartDate.toISOString().slice(0, 10),
+      km: Math.round(weekKm * 2) / 2,
+      sessions: buildWeekSessions(sessionsPerWeek, phase, hilly),
+      phase,
+    });
+  }
+
+  let feasibility: GoalFeasibility | null = null;
+  if (targetTimeSec && raceEstimateRef) {
+    const projectedMin = riegelProjectTime(raceEstimateRef.refDistKm, raceEstimateRef.refTimeMin, distanceKm);
+    const ratio = targetTimeSec / 60 / projectedMin;
+    if (ratio < 0.97) {
+      feasibility = {
+        verdict: "très ambitieux",
+        note: `À ton niveau actuel, plutôt ${formatDuration(
+          Math.round(projectedMin * 60)
+        )} sur ${distanceKm} km — vise cet objectif si la préparation se passe vraiment bien, avec un plan B plus prudent.`,
+      };
+    } else if (ratio <= 1.03) {
+      feasibility = {
+        verdict: "réaliste",
+        note: "Cohérent avec ta forme actuelle, dans la continuité d'une préparation sérieuse.",
+      };
+    } else if (ratio <= 1.15) {
+      feasibility = {
+        verdict: "prudent",
+        note: "Cet objectif laisse une marge confortable par rapport à ton niveau actuel.",
+      };
+    } else {
+      feasibility = {
+        verdict: "très prudent",
+        note: "Objectif nettement en retrait de ta forme actuelle — parfait pour viser une arrivée tranquille.",
+      };
+    }
+  }
+
+  return { totalWeeks, weeks, feasibility, peakWeeklyKm: Math.round(peakWeeklyKm * 2) / 2 };
+}
+
+/**
+ * Meilleur temps « équivalent » sur les distances de référence, à partir des sorties dont la
+ * distance en est proche (±15 %), ramené à la distance exacte par la même formule de Riegel.
+ * Ce n'est pas un chrono officiel : chaque record précise sa source.
+ */
+function buildRecords(sorted: StravaActivity[]): RecordEntry[] {
+  return STANDARD_RACE_DISTANCES.map((d) => {
+    const qualifying = sorted.filter(
+      (a) => a.distance >= d.km * 1000 * 0.85 && a.distance <= d.km * 1000 * 1.15 && a.moving_time > 0
+    );
+    if (qualifying.length === 0) {
+      return {
+        key: d.key,
+        label: d.label,
+        km: d.km,
+        timeLabel: null,
+        paceLabel: null,
+        date: null,
+        sourceLabel: null,
+        isRace: false,
+      };
+    }
+    let best: { a: StravaActivity; equivMin: number } | null = null;
+    for (const a of qualifying) {
+      const distKm = a.distance / 1000;
+      const timeMin = a.moving_time / 60;
+      const equivMin = riegelProjectTime(distKm, timeMin, d.km);
+      if (!best || equivMin < best.equivMin) best = { a, equivMin };
+    }
+    const chosen = best!.a;
+    const isExact = Math.abs(chosen.distance / 1000 - d.km) <= d.km * 0.03;
+    const isRace = chosen.workout_type === 1;
+    return {
+      key: d.key,
+      label: d.label,
+      km: d.km,
+      timeLabel: formatDuration(Math.round(best!.equivMin * 60)),
+      paceLabel: formatPace(best!.equivMin / d.km),
+      date: chosen.start_date_local.slice(0, 10),
+      sourceLabel: isRace
+        ? "chrono de course"
+        : isExact
+        ? "sortie à cette distance"
+        : `estimé depuis une sortie de ${(chosen.distance / 1000).toFixed(1)} km`,
+      isRace,
+    };
+  });
 }

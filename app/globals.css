@@ -182,12 +182,28 @@ table.races td.num { font-variant-numeric: tabular-nums; }
 .badge-pr { background: var(--accent-soft); color: var(--serious); }
 .badge-race { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
 
+/* Bureau : tableau complet. Mobile : cartes empilées, pour ne rien couper ni forcer un défilement
+   horizontal peu visible sur petit écran. */
+.races-cards-view { display: none; }
+@media (max-width: 720px) {
+  .races-table-view { display: none; }
+  .races-cards-view { display: flex; flex-direction: column; gap: 14px; }
+}
+.race-card { display: flex; flex-direction: column; gap: 10px; }
+.race-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.race-card-date { font-size: 12.5px; color: var(--ink-muted); }
+.race-card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 8px; }
+.race-card-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin-bottom: 3px; }
+.race-card-val { font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 .zones-wrap { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; }
 @media (max-width: 820px) { .zones-wrap { grid-template-columns: 1fr; } }
-.zone-row { display: grid; grid-template-columns: 90px 1fr 90px; align-items: center; gap: 10px; margin: 9px 0; font-size: 13px; }
+.zone-row { display: grid; grid-template-columns: 90px 1fr 128px; align-items: center; gap: 10px; margin: 9px 0; font-size: 13px; }
 .zone-name { font-weight: 600; }
 .zone-bar { height: 20px; border-radius: 5px; }
-.zone-range { text-align: right; color: var(--ink-muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.zone-range { text-align: right; color: var(--ink-muted); font-variant-numeric: tabular-nums; font-size: 12.5px; line-height: 1.5; }
+.zone-pace { color: var(--ink-2); font-weight: 600; }
+@media (max-width: 480px) { .zone-row { grid-template-columns: 74px 1fr 104px; gap: 6px; } }
 
 .lastrun-card { display: flex; flex-direction: column; gap: 22px; }
 .lastrun-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--hairline); }
@@ -225,22 +241,47 @@ table.races td.num { font-variant-numeric: tabular-nums; }
 .workout-meta b { color: var(--ink); font-weight: 600; }
 .workout-why { font-size: 14px; color: var(--ink-2); line-height: 1.6; margin: 0; padding-top: 14px; border-top: 1px solid var(--hairline); }
 
-.ramp-row { display: grid; grid-template-columns: 90px 1fr 60px; align-items: center; gap: 12px; margin: 8px 0; font-size: 13px; }
-.ramp-label { color: var(--ink-2); }
-.ramp-track { height: 14px; background: var(--surface-2); border-radius: 8px; overflow: hidden; }
-.ramp-fill { height: 100%; border-radius: 8px; background: var(--accent); }
-.ramp-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.estimates-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
+.estimates-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; }
+.estimate-tile { text-align: center; padding: 14px 8px; background: var(--surface-2); border-radius: 10px; }
+.estimate-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin-bottom: 6px; }
+.estimate-time { font-size: 26px; line-height: 1; }
+.estimate-pace { font-size: 12.5px; color: var(--ink-2); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.estimates-note { font-size: 12.5px; color: var(--ink-muted); margin: 14px 0 0; line-height: 1.5; }
 
-.goal-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 4px; }
-.goal-form input[type="date"] {
-  font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--hairline);
-  background: var(--surface); color: var(--ink);
+.records-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+@media (max-width: 760px) { .records-grid { grid-template-columns: repeat(2, 1fr); } }
+.record-tile { text-align: center; }
+.record-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); margin-bottom: 10px; }
+.record-time { font-size: 32px; line-height: 1; }
+.record-pace { font-size: 13px; color: var(--ink-2); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.record-meta { font-size: 11.5px; color: var(--ink-muted); margin-top: 8px; }
+.record-empty { font-size: 13px; color: var(--ink-muted); padding: 16px 0; }
+
+.goal-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 6px; }
+.goal-field label { display: block; font-size: 12px; color: var(--ink-muted); margin-bottom: 6px; }
+.goal-field input {
+  width: 100%; font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--ink); box-sizing: border-box;
 }
-.goal-form button {
-  font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: none;
-  background: var(--accent); color: var(--accent-ink); cursor: pointer;
+.goal-form-submit {
+  font: inherit; font-weight: 600; padding: 10px 20px; border-radius: 8px; border: none;
+  background: var(--accent); color: var(--accent-ink); cursor: pointer; margin-top: 4px;
 }
-.goal-form button:hover { opacity: 0.9; }
+.goal-form-submit:hover { opacity: 0.9; }
+
+.goal-feasibility { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 14px; }
+.goal-summary { color: var(--ink-2); font-size: 14.5px; line-height: 1.6; margin: 14px 0 22px; }
+.goal-phase { margin-top: 26px; }
+.goal-phase-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
+.goal-phase-title { font-size: 15.5px; font-weight: 700; }
+.goal-phase-range { font-size: 12.5px; color: var(--ink-muted); }
+.goal-week-row { display: grid; grid-template-columns: 100px 60px 1fr; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--hairline); font-size: 13.5px; }
+.goal-week-row:last-child { border-bottom: none; }
+.goal-week-date { color: var(--ink-muted); font-size: 12.5px; }
+.goal-week-km { font-weight: 700; font-variant-numeric: tabular-nums; }
+.goal-week-sessions { color: var(--ink-2); }
+@media (max-width: 560px) { .goal-week-row { grid-template-columns: 1fr; gap: 2px; } }
 
 .login-wrap {
   min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px;

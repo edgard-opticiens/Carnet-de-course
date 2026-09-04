@@ -25,6 +25,12 @@ function zoneIndex(hr: number, zones: ZoneBound[]): number {
   return 3;
 }
 
+function monthLabel(month: string): string {
+  const [y, m] = month.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" }).replace(".", "");
+}
+
 export default function PaceChart({
   paceTrend,
   zones,
@@ -41,18 +47,18 @@ export default function PaceChart({
     );
   }
 
-  const W = Math.max(700, paceTrend.length * 34);
-  const H = 260;
-  const padL = 44,
+  const bw = 42;
+  const padL = 46,
     padR = 16,
     padT = 16,
-    padB = 34;
+    padB = 40;
+  const W = Math.max(700, paceTrend.length * bw + padL + padR);
+  const H = 260;
   const plotW = W - padL - padR,
     plotH = H - padT - padB;
   const paces = paceTrend.map((p) => p.pace);
   const minP = Math.min(...paces) - 0.3,
     maxP = Math.max(...paces) + 0.3;
-  const bw = plotW / paceTrend.length;
 
   const pts = paceTrend.map((p, i) => {
     const x = padL + i * bw + bw / 2;
@@ -62,6 +68,11 @@ export default function PaceChart({
   const path = pts.map((pt, i) => `${i === 0 ? "M" : "L"}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(" ");
 
   const gridVals = [4, 5, 6, 7, 8].filter((v) => v >= minP && v <= maxP);
+
+  // Un label par point tant que ça tient, sinon on n'en garde qu'un sur N pour éviter le
+  // chevauchement — mais toujours au moins le premier et le dernier point.
+  const minLabelGap = 46;
+  const everyN = Math.max(1, Math.ceil(minLabelGap / bw));
 
   return (
     <>
@@ -78,6 +89,14 @@ export default function PaceChart({
               </g>
             );
           })}
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={padT + plotH}
+            y2={padT + plotH}
+            stroke="var(--ink-muted)"
+            strokeWidth={1}
+          />
           <path d={path} fill="none" stroke="var(--hairline)" strokeWidth={1.5} />
           {pts.map((pt, i) => {
             const z = zoneOf(pt.p.avg_hr, zones);
@@ -109,14 +128,16 @@ export default function PaceChart({
               />
             );
           })}
-          {pts.map(
-            (pt, i) =>
-              i % 3 === 0 && (
-                <text key={i} x={pt.x} y={H - 14} textAnchor="middle" fontSize={9.5}>
-                  {paceTrend[i].month.slice(2).replace("-", "/")}
-                </text>
-              )
-          )}
+          {pts.map((pt, i) => {
+            const isLast = i === pts.length - 1;
+            const show = i % everyN === 0 || isLast;
+            if (!show) return null;
+            return (
+              <text key={i} x={pt.x} y={H - padB + 20} textAnchor="middle" fontSize={11}>
+                {monthLabel(paceTrend[i].month)}
+              </text>
+            );
+          })}
         </svg>
       </div>
       <div className="legend">
