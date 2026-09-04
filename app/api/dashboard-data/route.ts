@@ -3,6 +3,10 @@ import { getSession } from "@/lib/session";
 import { ensureFreshToken, fetchAthleteZones, fetchRunningActivities } from "@/lib/strava";
 import { buildDashboardData } from "@/lib/analysis";
 
+// Toujours ré-exécuter côté serveur : cette route lit une session par cookie et interroge
+// Strava en direct, elle ne doit jamais être servie depuis un cache (CDN ou navigateur).
+export const dynamic = "force-dynamic";
+
 const MONTHS_BACK = 18;
 
 export async function GET() {

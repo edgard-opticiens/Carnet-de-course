@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Dashboard from "./Dashboard";
 import { TooltipProvider } from "./TooltipContext";
 import type { DashboardData } from "@/lib/analysis";
@@ -12,32 +12,68 @@ type LoadState =
 
 export default function DashboardShell() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const fetchingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/dashboard-data")
-      .then(async (res) => {
-        const body = await res.json();
-        if (cancelled) return;
-        if (!res.ok || body.error === "unauthenticated" || body.error === "session_expired") {
-          setState({ status: "error", kind: "auth" });
-          return;
-        }
-        if (body.error === "no_activities") {
-          setState({ status: "empty" });
-          return;
-        }
-        if (body.error) {
-          setState({ status: "error", kind: body.error, message: body.message });
-          return;
-        }
-        setState({ status: "ready", data: body.data });
-      })
-      .catch(() => {
-        if (!cancelled) setState({ status: "error", kind: "network" });
-      });
+
+    function load(silent: boolean) {
+      // Évite deux requêtes en parallèle si plusieurs événements (focus + visibilitychange)
+      // se déclenchent au même instant.
+      if (fetchingRef.current) return;
+      fetchingRef.current = true;
+      if (!silent) setState({ status: "loading" });
+
+      fetch("/api/dashboard-data", { cache: "no-store" })
+        .then(async (res) => {
+          const body = await res.json();
+          if (cancelled) return;
+          if (!res.ok || body.error === "unauthenticated" || body.error === "session_expired") {
+            setState({ status: "error", kind: "auth" });
+            return;
+          }
+          if (body.error === "no_activities") {
+            setState({ status: "empty" });
+            return;
+          }
+          if (body.error) {
+            setState({ status: "error", kind: body.error, message: body.message });
+            return;
+          }
+          setState({ status: "ready", data: body.data });
+          setUpdatedAt(new Date());
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // Un rafraîchissement silencieux qui échoue (ex. réseau coupé un instant) ne doit
+          // pas effacer un tableau de bord déjà affiché — on ne bascule sur l'écran d'erreur
+          // que si on n'avait encore rien à montrer.
+          setState((s) => (s.status === "ready" ? s : { status: "error", kind: "network" }));
+        })
+        .finally(() => {
+          fetchingRef.current = false;
+        });
+    }
+
+    load(false);
+
+    // Sur iPhone, une appli ajoutée à l'écran d'accueil est souvent simplement "réveillée"
+    // par iOS depuis la mémoire au lieu d'être rechargée depuis le réseau : le useEffect
+    // ci-dessus ne se redéclenche donc pas tout seul. On force un nouveau chargement des
+    // données à chaque fois que l'appli redevient visible (retour au premier plan).
+    function onResume() {
+      if (document.visibilityState === "visible") load(true);
+    }
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("pageshow", onResume);
+    window.addEventListener("focus", onResume);
+
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("pageshow", onResume);
+      window.removeEventListener("focus", onResume);
     };
   }, []);
 
@@ -94,7 +130,7 @@ export default function DashboardShell() {
 
   return (
     <TooltipProvider>
-      <Dashboard data={state.data} />
+      <Dashboard data={state.data} updatedAt={updatedAt} />
     </TooltipProvider>
   );
 }

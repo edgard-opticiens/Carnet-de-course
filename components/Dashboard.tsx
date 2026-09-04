@@ -14,7 +14,13 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
-export default function Dashboard({ data }: { data: DashboardData }) {
+export default function Dashboard({
+  data,
+  updatedAt,
+}: {
+  data: DashboardData;
+  updatedAt?: Date | null;
+}) {
   const weeklyDelta =
     data.compare.prevKm > 0
       ? Math.round(((data.compare.currKm - data.compare.prevKm) / data.compare.prevKm) * 100)
@@ -40,6 +46,12 @@ export default function Dashboard({ data }: { data: DashboardData }) {
               Période analysée : {formatDate(data.periodStart)} → {formatDate(data.periodEnd)}
             </span>
             <span>{data.totalRuns} sorties course/trail</span>
+            {updatedAt && (
+              <span>
+                actualisé à{" "}
+                {updatedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
             <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
               <button
                 type="submit"
