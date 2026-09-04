@@ -1,4 +1,5 @@
 import type { DashboardData } from "@/lib/analysis";
+import LastRunCard from "./LastRunCard";
 import StatGrid from "./StatGrid";
 import CompareCard from "./CompareCard";
 import MonthlyChart from "./charts/MonthlyChart";
@@ -58,6 +59,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
           </div>
         </div>
       </header>
+
+      {data.lastRun && <LastRunCard run={data.lastRun} />}
 
       <div className="wrap">
         <StatGrid data={data} />

@@ -55,6 +55,28 @@ export interface Recommendations {
   workouts: WorkoutCard[];
 }
 
+export type WorkoutTypeLabel = "sortie" | "course" | "sortie longue" | "séance";
+
+export interface LastRunReview {
+  id: number;
+  name: string;
+  date: string; // YYYY-MM-DD
+  distKm: number;
+  durationLabel: string;
+  paceLabel: string;
+  avgHr: number | null;
+  hrZoneIdx: number | null;
+  elevM: number;
+  isPR: boolean;
+  typeLabel: WorkoutTypeLabel;
+  daysSincePrevious: number | null;
+  positives: string[];
+  watchouts: string[];
+  restAdvice: string;
+  nextWorkout: WorkoutCard | null;
+  nextWorkoutRationale: string;
+}
+
 export interface DashboardData {
   athleteName: string;
   totalDistKm: number;
@@ -71,6 +93,7 @@ export interface DashboardData {
   zones: ZoneBound[];
   hasHeartRateData: boolean;
   recommendations: Recommendations;
+  lastRun: LastRunReview | null;
 }
 
 const MS_DAY = 86400000;
@@ -251,6 +274,9 @@ export function buildDashboardData(
   // ---- recommandations générées par règles ----
   const recommendations = buildRecommendations(compare, paceTrend, zones);
 
+  // ---- compte rendu de la toute dernière sortie ----
+  const lastRun = buildLastRunReview(sorted, zones, recommendations);
+
   return {
     athleteName,
     totalDistKm: Math.round(totalDistKm),
@@ -267,6 +293,228 @@ export function buildDashboardData(
     zones,
     hasHeartRateData,
     recommendations,
+    lastRun,
+  };
+}
+
+function zoneIndexForHr(hr: number, zones: ZoneBound[]): number | null {
+  if (!zones.length) return null;
+  for (let i = 0; i < zones.length; i++) {
+    const z = zones[i];
+    if (hr >= z.min && (z.max === null || hr < z.max)) return i + 1;
+  }
+  return hr < zones[0].min ? 1 : zones.length;
+}
+
+function workoutTypeLabel(wt: number | null | undefined): WorkoutTypeLabel {
+  if (wt === 1) return "course";
+  if (wt === 2) return "sortie longue";
+  if (wt === 3) return "séance";
+  return "sortie";
+}
+
+/**
+ * Analyse la toute dernière sortie enregistrée par rapport aux habitudes récentes de l'athlète :
+ * ce qui était bien, les points de vigilance, un conseil de repos et une proposition pour la
+ * sortie suivante — le tout par règles déterministes, sans IA, à partir des seules données Strava.
+ */
+function buildLastRunReview(
+  sorted: StravaActivity[],
+  zones: ZoneBound[],
+  recommendations: Recommendations
+): LastRunReview | null {
+  if (sorted.length === 0) return null;
+  const last = sorted[sorted.length - 1];
+  const prevRuns = sorted.slice(0, -1);
+  const lastDistKm = last.distance / 1000;
+  const lastPace = paceFromSpeed(last.average_speed);
+  const typeLabel = workoutTypeLabel(last.workout_type);
+
+  // Bassin de comparaison : sorties de distance comparable parmi les 20 précédentes,
+  // sinon repli sur les 8 dernières sorties toutes distances confondues.
+  const recentPool = prevRuns.slice(-20);
+  let baseline = recentPool.filter(
+    (a) => a.distance >= last.distance * 0.6 && a.distance <= last.distance * 1.4
+  );
+  if (baseline.length < 3) baseline = recentPool.slice(-8);
+
+  const avgBaselinePace =
+    baseline.length > 0
+      ? baseline.reduce((s, a) => s + paceFromSpeed(a.average_speed), 0) / baseline.length
+      : null;
+  const avgBaselineElevPerKm =
+    baseline.length > 0
+      ? baseline.reduce((s, a) => s + a.total_elevation_gain / Math.max(a.distance / 1000, 0.1), 0) /
+        baseline.length
+      : null;
+  const lastElevPerKm = last.total_elevation_gain / Math.max(lastDistKm, 0.1);
+
+  const last8 = prevRuns.slice(-8);
+  const typicalDistanceKm =
+    last8.length > 0 ? last8.reduce((s, a) => s + a.distance / 1000, 0) / last8.length : null;
+  const maxRecentDistanceKm =
+    last8.length > 0 ? Math.max(...last8.map((a) => a.distance / 1000)) : null;
+
+  const daysSincePrevious =
+    prevRuns.length > 0
+      ? (new Date(last.start_date_local).getTime() -
+          new Date(prevRuns[prevRuns.length - 1].start_date_local).getTime()) /
+        MS_DAY
+      : null;
+
+  const hasHr = !!(last.has_heartrate && last.average_heartrate);
+  const hrZoneIdx = hasHr && zones.length >= 4 ? zoneIndexForHr(last.average_heartrate!, zones) : null;
+
+  const positives: string[] = [];
+  const watchouts: string[] = [];
+
+  if ((last.pr_count ?? 0) > 0) {
+    positives.push("Nouveau record personnel enregistré sur cette sortie.");
+  }
+
+  if (avgBaselinePace !== null && avgBaselinePace > 0) {
+    const paceDeltaPct = ((lastPace - avgBaselinePace) / avgBaselinePace) * 100;
+    const climbedMore =
+      avgBaselineElevPerKm !== null && lastElevPerKm > avgBaselineElevPerKm * 1.5;
+    if (paceDeltaPct <= -3) {
+      positives.push(
+        `Allure ${formatPace(lastPace)} : plus rapide que ta moyenne récente sur une distance comparable (${formatPace(
+          avgBaselinePace
+        )}).`
+      );
+    } else if (paceDeltaPct >= 5 && climbedMore) {
+      positives.push(
+        `Allure plus lente qu'habituellement, mais cohérent avec le dénivelé de cette sortie (${Math.round(
+          lastElevPerKm
+        )} m/km contre ${Math.round(avgBaselineElevPerKm!)} m/km en moyenne).`
+      );
+    } else if (paceDeltaPct >= 5) {
+      watchouts.push(
+        `Allure ${formatPace(lastPace)} : environ ${Math.round(
+          paceDeltaPct
+        )} % plus lent que ta moyenne récente sur une distance comparable (${formatPace(avgBaselinePace)}).`
+      );
+    }
+  }
+
+  if (typicalDistanceKm !== null) {
+    if (lastDistKm >= typicalDistanceKm * 1.15) {
+      positives.push(
+        `Sortie plus longue que ta moyenne récente (${lastDistKm.toFixed(1)} km contre ${typicalDistanceKm.toFixed(
+          1
+        )} km) — bon travail d'endurance.`
+      );
+    }
+    if (maxRecentDistanceKm !== null && lastDistKm > maxRecentDistanceKm * 1.3) {
+      watchouts.push(
+        `Hausse nette de distance par rapport à tes sorties récentes (jusqu'ici ${maxRecentDistanceKm.toFixed(
+          1
+        )} km max) : mieux vaut progresser par paliers pour limiter le risque de blessure.`
+      );
+    }
+  }
+
+  if (hrZoneIdx !== null) {
+    const isEasyContext = typeLabel === "sortie" || typeLabel === "sortie longue";
+    if (isEasyContext && hrZoneIdx >= 4) {
+      watchouts.push(
+        `FC moyenne de ${Math.round(
+          last.average_heartrate!
+        )} bpm, en zone ${hrZoneIdx} : plutôt soutenu pour ce type de sortie — les sorties de fond gagnent à rester en zone 1-2.`
+      );
+    } else if (isEasyContext && hrZoneIdx <= 2) {
+      positives.push(
+        `FC moyenne de ${Math.round(
+          last.average_heartrate!
+        )} bpm, bien contenue en zone ${hrZoneIdx} : exactement l'effort recherché sur ce type de sortie.`
+      );
+    } else if (typeLabel === "séance" && hrZoneIdx >= 3) {
+      positives.push(`FC moyenne en zone ${hrZoneIdx} : cohérent avec une séance à intensité.`);
+    }
+  }
+
+  if (daysSincePrevious !== null && daysSincePrevious < 0.85 && (hrZoneIdx ?? 0) >= 4) {
+    watchouts.push(
+      "Moins d'un jour depuis ta sortie précédente, pour un effort plutôt soutenu : surveille que la récupération suit."
+    );
+  }
+
+  if (positives.length === 0) {
+    positives.push("Sortie enregistrée dans la continuité de ton volume habituel.");
+  }
+  if (watchouts.length === 0) {
+    watchouts.push("Rien de particulier à signaler sur cette sortie — poursuis sur cette lancée.");
+  }
+
+  // ---- conseil de repos ----
+  let restAdvice: string;
+  if (typeLabel === "course") {
+    const days = Math.min(10, Math.max(1, Math.round(lastDistKm / 5)));
+    restAdvice = `Après une course de ${lastDistKm.toFixed(1)} km, compte ${days} à ${
+      days + 1
+    } jour${days > 1 ? "s" : ""} de récupération active (footing très facile ou repos) avant de reprendre les séances exigeantes.`;
+  } else if (hrZoneIdx !== null && hrZoneIdx >= 4) {
+    restAdvice =
+      "Effort soutenu : ajoute une journée de récupération facile (ou de repos complet) avant ta prochaine séance intense.";
+  } else if (typeLabel === "séance") {
+    restAdvice =
+      "Après cette séance, une sortie facile ou un jour de repos suffit avant de repartir sur de l'intensité.";
+  } else if (
+    typeLabel === "sortie longue" ||
+    (maxRecentDistanceKm !== null && lastDistKm >= maxRecentDistanceKm)
+  ) {
+    restAdvice = "Une sortie très facile ou un repos demain suffit à encaisser cette sortie longue.";
+  } else {
+    restAdvice = "Effort modéré : tu peux enchaîner normalement, pas de repos particulier nécessaire.";
+  }
+
+  // ---- proposition pour la sortie suivante, à partir des 4 formats déjà recommandés ----
+  let nextIdx = 0;
+  let nextWorkoutRationale: string;
+  if (typeLabel === "course") {
+    nextIdx = 0;
+    nextWorkoutRationale =
+      "Après une course, on repart doucement : une sortie fondamentale bien facile avant de retrouver du rythme.";
+  } else if (hrZoneIdx !== null && hrZoneIdx >= 4) {
+    nextIdx = 0;
+    nextWorkoutRationale =
+      "Cette sortie était soutenue : la prochaine gagne à rester très facile pour encaisser l'effort.";
+  } else if (
+    typeLabel === "sortie longue" ||
+    (maxRecentDistanceKm !== null && lastDistKm > maxRecentDistanceKm * 1.2)
+  ) {
+    nextIdx = 0;
+    nextWorkoutRationale =
+      "Après cette sortie longue, priorité à la récupération avant la prochaine séance de qualité.";
+  } else if (typeLabel === "séance") {
+    nextIdx = 2;
+    nextWorkoutRationale =
+      "Après une séance, la sortie longue reste l'occasion de construire de l'endurance à effort contrôlé.";
+  } else {
+    nextIdx = 1;
+    nextWorkoutRationale =
+      "Cette sortie facile est une bonne base pour introduire un peu de rythme à la prochaine séance.";
+  }
+  const nextWorkout = recommendations.workouts[nextIdx] ?? recommendations.workouts[0] ?? null;
+
+  return {
+    id: last.id,
+    name: last.name,
+    date: last.start_date_local.slice(0, 10),
+    distKm: Math.round(lastDistKm * 10) / 10,
+    durationLabel: formatDuration(last.moving_time),
+    paceLabel: formatPace(lastPace),
+    avgHr: hasHr ? Math.round(last.average_heartrate!) : null,
+    hrZoneIdx,
+    elevM: Math.round(last.total_elevation_gain),
+    isPR: (last.pr_count ?? 0) > 0,
+    typeLabel,
+    daysSincePrevious: daysSincePrevious !== null ? Math.round(daysSincePrevious * 10) / 10 : null,
+    positives,
+    watchouts,
+    restAdvice,
+    nextWorkout,
+    nextWorkoutRationale,
   };
 }
 

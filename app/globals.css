@@ -189,6 +189,28 @@ table.races td.num { font-variant-numeric: tabular-nums; }
 .zone-bar { height: 20px; border-radius: 5px; }
 .zone-range { text-align: right; color: var(--ink-muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 
+.lastrun-card { display: flex; flex-direction: column; gap: 22px; }
+.lastrun-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--hairline); }
+.lastrun-stat-val { font-size: 28px; line-height: 1; }
+.lastrun-stat-label { font-size: 12px; color: var(--ink-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.lastrun-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 700px) { .lastrun-cols { grid-template-columns: 1fr; } }
+.lastrun-col-head { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+.lastrun-col-head.good { color: var(--good); }
+.lastrun-col-head.warning { color: var(--warning); }
+.lastrun-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.lastrun-list li { position: relative; padding-left: 20px; font-size: 14px; color: var(--ink-2); line-height: 1.55; }
+.lastrun-list li::before { content: ""; position: absolute; left: 0; top: 7px; width: 8px; height: 8px; border-radius: 50%; }
+.lastrun-list.good li::before { background: var(--good); }
+.lastrun-list.warning li::before { background: var(--warning); }
+
+.lastrun-next { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding-top: 20px; border-top: 1px solid var(--hairline); }
+@media (max-width: 700px) { .lastrun-next { grid-template-columns: 1fr; } }
+.lastrun-next-label { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); margin-bottom: 8px; }
+.lastrun-next-block p { margin: 0; font-size: 14.5px; color: var(--ink-2); line-height: 1.6; }
+.lastrun-next-block p b { color: var(--ink); }
+
 .conseils p { color: var(--ink-2); line-height: 1.7; font-size: 15.5px; margin: 0 0 18px; max-width: 74ch; }
 .conseils p b { color: var(--ink); }
 .callout { border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; margin: 22px 0; font-size: 14px; color: var(--ink-2); }
