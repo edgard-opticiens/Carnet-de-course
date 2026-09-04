@@ -219,6 +219,9 @@ export default function Dashboard({
                     }
                   : null
               }
+              paceHints={data.workoutPaceHints}
+              zones={data.zones}
+              athleteName={data.athleteName}
             />
           </div>
         </div>

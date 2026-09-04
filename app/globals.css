@@ -270,18 +270,31 @@ table.races td.num { font-variant-numeric: tabular-nums; }
 }
 .goal-form-submit:hover { opacity: 0.9; }
 
-.goal-feasibility { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 14px; }
+.goal-feasibility { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 14px; flex-wrap: wrap; }
 .goal-summary { color: var(--ink-2); font-size: 14.5px; line-height: 1.6; margin: 14px 0 22px; }
+
+.goal-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 22px; }
+.goal-action-btn {
+  font: inherit; font-size: 13.5px; font-weight: 600; padding: 8px 16px; border-radius: 8px;
+  border: 1px solid var(--hairline); background: var(--surface); color: var(--ink);
+  cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+}
+.goal-action-btn:hover { background: var(--surface-2); }
+
 .goal-phase { margin-top: 26px; }
 .goal-phase-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
 .goal-phase-title { font-size: 15.5px; font-weight: 700; }
 .goal-phase-range { font-size: 12.5px; color: var(--ink-muted); }
-.goal-week-row { display: grid; grid-template-columns: 100px 60px 1fr; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--hairline); font-size: 13.5px; }
+.goal-week-row { display: grid; grid-template-columns: 100px 60px 1fr; align-items: start; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--hairline); font-size: 13.5px; }
 .goal-week-row:last-child { border-bottom: none; }
-.goal-week-date { color: var(--ink-muted); font-size: 12.5px; }
-.goal-week-km { font-weight: 700; font-variant-numeric: tabular-nums; }
-.goal-week-sessions { color: var(--ink-2); }
-@media (max-width: 560px) { .goal-week-row { grid-template-columns: 1fr; gap: 2px; } }
+.goal-week-date { color: var(--ink-muted); font-size: 12.5px; padding-top: 2px; }
+.goal-week-km { font-weight: 700; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.goal-week-sessions { color: var(--ink-2); display: flex; flex-direction: column; gap: 9px; }
+.goal-session { display: flex; align-items: baseline; gap: 8px; line-height: 1.55; }
+.goal-session-dot { flex: none; align-self: center; }
+.goal-session-label { font-weight: 700; color: var(--ink); white-space: nowrap; }
+.goal-session-detail { color: var(--ink-2); }
+@media (max-width: 560px) { .goal-week-row { grid-template-columns: 1fr; gap: 6px; } }
 
 .login-wrap {
   min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px;

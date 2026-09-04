@@ -57,6 +57,12 @@ export interface Recommendations {
   workouts: WorkoutCard[];
 }
 
+export interface WorkoutPaceHints {
+  easyRange: string | null;
+  fartlekRange: string | null;
+  fractionneRange: string | null;
+}
+
 export type WorkoutTypeLabel = "sortie" | "course" | "sortie longue" | "séance";
 
 export interface LastRunReview {
@@ -123,6 +129,7 @@ export interface DashboardData {
   zones: ZoneBound[];
   zonePaces: (string | null)[];
   hasHeartRateData: boolean;
+  workoutPaceHints: WorkoutPaceHints;
   recommendations: Recommendations;
   lastRun: LastRunReview | null;
   raceEstimates: RaceEstimates | null;
@@ -328,6 +335,7 @@ export function buildDashboardData(
   const zonePaces: (string | null)[] = zones.map((_, i) =>
     formatPaceRange(paceRangeForZones(paceByZone, [i + 1]))
   );
+  const workoutPaceHints = buildWorkoutPaceHints(paceByZone);
 
   // ---- dénivelé récent, pour savoir si le côtes a du sens dans les sorties proposées ----
   const recentForElev = sorted.slice(-12);
@@ -340,7 +348,7 @@ export function buildDashboardData(
       : 0;
 
   // ---- recommandations générées par règles ----
-  const recommendations = buildRecommendations(compare, zones, paceByZone, avgElevPerKmRecent);
+  const recommendations = buildRecommendations(compare, zones, workoutPaceHints, avgElevPerKmRecent);
 
   // ---- compte rendu de la toute dernière sortie ----
   const lastRun = buildLastRunReview(sorted, zones, recommendations);
@@ -366,6 +374,7 @@ export function buildDashboardData(
     zones,
     zonePaces,
     hasHeartRateData,
+    workoutPaceHints,
     recommendations,
     lastRun,
     raceEstimates,
@@ -661,10 +670,24 @@ function bestPaceRange(byZone: Map<number, number[]>, primary: number[], fallbac
   return formatPaceRange(paceRangeForZones(byZone, primary)) ?? formatPaceRange(paceRangeForZones(byZone, fallback));
 }
 
+/**
+ * Allures indicatives par type de séance, déduites empiriquement des sorties passées dans les
+ * zones de FC correspondantes. Calculé une seule fois et partagé entre les "Sorties pour
+ * progresser" (recommandations du moment) et le générateur de programme (Trajectoire vers un
+ * objectif), pour que les deux se basent sur la même lecture des données.
+ */
+function buildWorkoutPaceHints(paceByZone: Map<number, number[]>): WorkoutPaceHints {
+  return {
+    easyRange: bestPaceRange(paceByZone, [1, 2], [1, 2]),
+    fartlekRange: bestPaceRange(paceByZone, [3], [3, 4]),
+    fractionneRange: bestPaceRange(paceByZone, [4], [3, 4]),
+  };
+}
+
 function buildRecommendations(
   compare: { prevKm: number; currKm: number },
   zones: ZoneBound[],
-  paceByZone: Map<number, number[]>,
+  paceHints: WorkoutPaceHints,
   avgElevPerKmRecent: number
 ): Recommendations {
   const prevWeekly = compare.prevKm / 8;
@@ -689,9 +712,7 @@ function buildRecommendations(
       : "Le volume est stable : c'est le bon moment pour travailler toutes les allures, du fondamental à la vitesse.";
 
   const zoneHint = zones.length >= 4;
-  const easyRange = bestPaceRange(paceByZone, [1, 2], [1, 2]);
-  const fartlekRange = bestPaceRange(paceByZone, [3], [3, 4]);
-  const fractionneRange = bestPaceRange(paceByZone, [4], [3, 4]);
+  const { easyRange, fartlekRange, fractionneRange } = paceHints;
 
   const pool: WorkoutCard[] = [
     {
@@ -885,13 +906,21 @@ export interface GoalPlanInput {
   now: Date;
   currentWeeklyKm: number;
   raceEstimateRef: { refDistKm: number; refTimeMin: number } | null;
+  paceHints: WorkoutPaceHints;
+  zones: ZoneBound[];
+}
+
+export interface GoalPlanSession {
+  label: string;
+  zoneLabel: "aerobie" | "tempo" | "seuil" | "maximal";
+  detail: string;
 }
 
 export interface GoalPlanWeek {
   weekIndex: number;
   startDate: string;
   km: number;
-  sessions: string[];
+  sessions: GoalPlanSession[];
   phase: "base" | "specifique" | "affutage";
 }
 
@@ -907,19 +936,90 @@ export interface GoalPlan {
   peakWeeklyKm: number;
 }
 
-function buildWeekSessions(n: number, phase: GoalPlanWeek["phase"], hilly: boolean): string[] {
-  const sessions: string[] = [];
+// ---- description détaillée de chaque type de séance, pour le programme semaine par semaine ----
+// Reprend la même logique/allures que les cartes "Sorties pour progresser", adaptée au contexte
+// d'un programme (distance de la sortie longue calée sur le volume de la semaine, densité du
+// fractionné selon la proximité de l'objectif).
+
+function sessionSortieLongue(weekKm: number, paceHints: WorkoutPaceHints): GoalPlanSession {
+  const longKm = Math.max(6, Math.round(Math.min(weekKm * 0.32, weekKm - 4) * 2) / 2);
+  return {
+    label: "Sortie longue",
+    zoneLabel: "aerobie",
+    detail: `≈ ${longKm} km à allure ${paceHints.easyRange ?? "facile, à la sensation"} (Z1-Z2 strict, aucune pression d'allure).`,
+  };
+}
+
+function sessionEF(paceHints: WorkoutPaceHints, zones: ZoneBound[]): GoalPlanSession {
+  const cible = zones.length >= 4 ? `Z1-Z2, FC < ${zones[2]?.min ?? "..."} bpm environ` : "Z1-Z2, allure conversation";
+  return {
+    label: "EF",
+    zoneLabel: "aerobie",
+    detail: `25 à 40 min à allure ${paceHints.easyRange ?? "facile, à la sensation"} (${cible}).`,
+  };
+}
+
+function sessionEfVive(paceHints: WorkoutPaceHints): GoalPlanSession {
+  return {
+    label: "EF vive",
+    zoneLabel: "tempo",
+    detail: `20 à 30 min à allure ${
+      paceHints.easyRange ?? "facile"
+    }, terminée par 4 à 6 accélérations progressives de 20 à 30 s — on garde les jambes vives sans créer de fatigue.`,
+  };
+}
+
+function sessionFartlek(paceHints: WorkoutPaceHints): GoalPlanSession {
+  return {
+    label: "Fartlek",
+    zoneLabel: "tempo",
+    detail: `25 à 30 min dont 6 à 8 x 1 min plus soutenu / 2 min très facile${
+      paceHints.fartlekRange ? `, portions rapides à ${paceHints.fartlekRange}` : ""
+    }.`,
+  };
+}
+
+function sessionFractionne(paceHints: WorkoutPaceHints, dense: boolean): GoalPlanSession {
+  const duree = dense
+    ? "8 à 12 x 400 m (récup. 200 m trot), ou 5 à 6 x 1000 m (récup. 2-3 min)"
+    : "6 à 8 x 400 m (récup. 200 m trot)";
+  return {
+    label: "Fractionné",
+    zoneLabel: "seuil",
+    detail: `${duree}${paceHints.fractionneRange ? `, répétitions à ${paceHints.fractionneRange}` : ""}.`,
+  };
+}
+
+function sessionCotes(): GoalPlanSession {
+  return {
+    label: "Côtes",
+    zoneLabel: "maximal",
+    detail: "6 à 10 répétitions de côtes de 200 à 400 m, effort en Z4-Z5, retour en footing en récupération complète.",
+  };
+}
+
+function buildWeekSessions(
+  n: number,
+  phase: GoalPlanWeek["phase"],
+  hilly: boolean,
+  weekKm: number,
+  paceHints: WorkoutPaceHints,
+  zones: ZoneBound[]
+): GoalPlanSession[] {
+  const sessions: GoalPlanSession[] = [];
   if (n <= 0) return sessions;
-  sessions.push("Sortie longue");
-  if (n >= 2) sessions.push("EF");
+  sessions.push(sessionSortieLongue(weekKm, paceHints));
+  if (n >= 2) sessions.push(sessionEF(paceHints, zones));
   if (n >= 3) {
-    if (phase === "base") sessions.push("Fartlek");
-    else if (phase === "specifique") sessions.push(hilly ? "Côtes" : "Fractionné");
-    else sessions.push("EF vive");
+    if (phase === "base") sessions.push(sessionFartlek(paceHints));
+    else if (phase === "specifique") sessions.push(hilly ? sessionCotes() : sessionFractionne(paceHints, true));
+    else sessions.push(sessionEfVive(paceHints));
   }
-  if (n >= 4) sessions.push("EF");
-  if (n >= 5) sessions.push(phase === "specifique" && hilly ? "Fractionné" : "EF");
-  if (n >= 6) sessions.push("EF");
+  if (n >= 4) sessions.push(sessionEF(paceHints, zones));
+  if (n >= 5) {
+    sessions.push(phase === "specifique" && hilly ? sessionFractionne(paceHints, true) : sessionEF(paceHints, zones));
+  }
+  if (n >= 6) sessions.push(sessionEF(paceHints, zones));
   return sessions.slice(0, n);
 }
 
@@ -939,6 +1039,8 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan | null {
     now,
     currentWeeklyKm,
     raceEstimateRef,
+    paceHints,
+    zones,
   } = input;
   if (distanceKm <= 0 || sessionsPerWeek <= 0) return null;
   const msPerWeek = 7 * MS_DAY;
@@ -981,7 +1083,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan | null {
       weekIndex: i,
       startDate: weekStartDate.toISOString().slice(0, 10),
       km: Math.round(weekKm * 2) / 2,
-      sessions: buildWeekSessions(sessionsPerWeek, phase, hilly),
+      sessions: buildWeekSessions(sessionsPerWeek, phase, hilly, weekKm, paceHints, zones),
       phase,
     });
   }

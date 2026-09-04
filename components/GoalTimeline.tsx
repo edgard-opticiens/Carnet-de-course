@@ -1,9 +1,16 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { buildGoalPlan } from "@/lib/analysis";
-import type { GoalPlan } from "@/lib/analysis";
+import type { GoalPlan, GoalPlanSession, WorkoutPaceHints, ZoneBound } from "@/lib/analysis";
 
 const STORAGE_KEY = "carnet-de-course:goal-v2";
+
+const ZONE_COLOR_VAR: Record<GoalPlanSession["zoneLabel"], string> = {
+  aerobie: "var(--effort4-1)",
+  tempo: "var(--effort4-2)",
+  seuil: "var(--effort4-3)",
+  maximal: "var(--effort4-4)",
+};
 
 interface GoalForm {
   date: string;
@@ -36,21 +43,127 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
 }
 
+function fmtDateFull(iso: string): string {
+  return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
 const PHASE_LABEL: Record<GoalPlan["weeks"][number]["phase"], string> = {
   base: "Base aérobie",
   specifique: "Bloc spécifique",
   affutage: "Affûtage",
 };
 
+// Limite prudente pour la longueur d'un lien mailto: — au-delà, certains clients mail (Outlook
+// desktop en particulier) tronquent silencieusement le corps du message. On bascule alors sur un
+// résumé condensé (une ligne par semaine, sans le détail des allures) plutôt que de couper le
+// texte n'importe où.
+const MAILTO_SAFE_LENGTH = 1800;
+
+function planHeaderLines(plan: GoalPlan, meta: { distanceKm: number; eventDate: string; athleteName?: string }): string[] {
+  const lines: string[] = [];
+  lines.push(`Programme d'entraînement — ${meta.distanceKm} km le ${fmtDateFull(meta.eventDate)}`);
+  if (meta.athleteName) lines.push(`Pour ${meta.athleteName}`);
+  lines.push(`Généré par Carnet de Course le ${fmtDateFull(new Date().toISOString())}`);
+  lines.push("");
+  lines.push(
+    `${plan.totalWeeks} semaine${plan.totalWeeks > 1 ? "s" : ""} avant l'objectif, volume de pic estimé à ${
+      plan.peakWeeklyKm
+    } km/semaine avant l'affûtage.`
+  );
+  if (plan.feasibility) {
+    lines.push(`Objectif ${plan.feasibility.verdict} : ${plan.feasibility.note}`);
+  }
+  lines.push("");
+  return lines;
+}
+
+function weekBlockLines(w: GoalPlan["weeks"][number], detailed: boolean): string[] {
+  const lines: string[] = [];
+  lines.push(`Semaine du ${fmtDateFull(w.startDate)} — ${PHASE_LABEL[w.phase]} — ${w.km} km`);
+  if (detailed) {
+    for (const s of w.sessions) lines.push(`  - ${s.label} : ${s.detail}`);
+  } else {
+    lines.push(`  ${w.sessions.map((s) => s.label).join(" · ")}`);
+  }
+  lines.push("");
+  return lines;
+}
+
+const PLAN_FOOTER =
+  "Programme généré automatiquement par Carnet de Course à partir des données Strava — ne remplace pas l'avis d'un coach ou d'un professionnel de santé.";
+
+function buildPlanText(
+  plan: GoalPlan,
+  meta: { distanceKm: number; eventDate: string; athleteName?: string },
+  detailed: boolean
+): string {
+  const lines = [...planHeaderLines(plan, meta)];
+  for (const w of plan.weeks) lines.push(...weekBlockLines(w, detailed));
+  lines.push(PLAN_FOOTER);
+  return lines.join("\n");
+}
+
+/**
+ * Variante condensée et tronquée proprement (semaine par semaine, jamais en plein milieu d'une
+ * phrase) pour tenir dans la limite prudente d'un lien mailto:. Si même le résumé condensé ne
+ * tient pas en entier, on n'inclut que les premières semaines et on renvoie vers le bouton
+ * "Copier le programme" pour le détail complet.
+ */
+function buildMailtoBody(plan: GoalPlan, meta: { distanceKm: number; eventDate: string; athleteName?: string }): string {
+  const header = planHeaderLines(plan, meta).join("\n");
+  const footer = PLAN_FOOTER;
+  const copyHint = 'Programme complet (avec le détail de chaque séance) : utilise le bouton "Copier le programme" sur le site.';
+
+  const fits = (body: string) => encodeURIComponent(body).length <= MAILTO_SAFE_LENGTH;
+
+  const fullDetailed = buildPlanText(plan, meta, true);
+  if (fits(fullDetailed)) return fullDetailed;
+
+  const allCondensedWeeks = plan.weeks.map((w) => weekBlockLines(w, false).join("\n"));
+  const fullCondensed = [header, ...allCondensedWeeks, footer].join("\n");
+  if (fits(fullCondensed)) return fullCondensed;
+
+  // Même condensé, ça ne tient pas : on ajoute les semaines une à une tant que ça passe, avec le
+  // renvoi vers "Copier le programme" toujours présent et jamais coupé.
+  let included = 0;
+  for (let i = 0; i < allCondensedWeeks.length; i++) {
+    const candidate = [
+      header,
+      ...allCondensedWeeks.slice(0, i + 1),
+      `… (+${plan.weeks.length - (i + 1)} semaine${plan.weeks.length - (i + 1) > 1 ? "s" : ""} de plus)`,
+      "",
+      copyHint,
+    ].join("\n");
+    if (!fits(candidate)) break;
+    included = i + 1;
+  }
+  const remaining = plan.weeks.length - included;
+  return [
+    header,
+    ...allCondensedWeeks.slice(0, included),
+    remaining > 0 ? `… (+${remaining} semaine${remaining > 1 ? "s" : ""} de plus)\n` : "",
+    copyHint,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export default function GoalTimeline({
   currentWeeklyKm,
   raceEstimateRef,
+  paceHints,
+  zones,
+  athleteName,
 }: {
   currentWeeklyKm: number;
   raceEstimateRef: { refDistKm: number; refTimeMin: number } | null;
+  paceHints: WorkoutPaceHints;
+  zones: ZoneBound[];
+  athleteName?: string;
 }) {
   const [form, setForm] = useState<GoalForm>(DEFAULT_FORM);
   const [submitted, setSubmitted] = useState<GoalForm | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
   useEffect(() => {
     try {
@@ -72,6 +185,7 @@ export default function GoalTimeline({
     } catch {
       /* si le stockage échoue, on garde quand même la valeur en mémoire pour cette session */
     }
+    setCopyState("idle");
     setSubmitted(form);
   }
 
@@ -91,8 +205,33 @@ export default function GoalTimeline({
           now,
           currentWeeklyKm,
           raceEstimateRef,
+          paceHints,
+          zones,
         })
       : null;
+
+  const { mailtoHref, fullText } = useMemo(() => {
+    if (!plan || !submitted) return { mailtoHref: null as string | null, fullText: "" };
+    const meta = { distanceKm, eventDate: submitted.date, athleteName };
+    const detailed = buildPlanText(plan, meta, true);
+    const body = buildMailtoBody(plan, meta);
+    const subject = `Programme d'entraînement — ${distanceKm} km le ${fmtDateFull(submitted.date)}`;
+    return {
+      mailtoHref: `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+      fullText: detailed,
+    };
+  }, [plan, submitted, distanceKm, athleteName]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(fullText);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 2500);
+    } catch {
+      setCopyState("error");
+      setTimeout(() => setCopyState("idle"), 3000);
+    }
+  }
 
   return (
     <div>
@@ -183,11 +322,21 @@ export default function GoalTimeline({
               <span style={{ color: "var(--ink-2)", fontSize: 13.5 }}>{plan.feasibility.note}</span>
             </div>
           )}
+
+          <div className="goal-actions">
+            <a className="goal-action-btn" href={mailtoHref ?? undefined}>
+              Envoyer par e-mail
+            </a>
+            <button type="button" className="goal-action-btn" onClick={handleCopy}>
+              {copyState === "copied" ? "Copié !" : copyState === "error" ? "Copie impossible" : "Copier le programme"}
+            </button>
+          </div>
+
           <GoalPlanWeeks plan={plan} />
           <div className="callout" style={{ marginTop: 20 }}>
-            Programme généré par règles simples à partir de ton volume et de ton terrain récents — il
-            donne un cadre de progression raisonnable, pas une prescription médicale ou d&rsquo;un
-            coach diplômé.
+            Programme généré par règles simples à partir de ton volume, de tes allures récentes par
+            zone et de ton terrain — il donne un cadre de progression raisonnable, pas une
+            prescription médicale ou d&rsquo;un coach diplômé.
           </div>
         </div>
       )}
@@ -197,8 +346,8 @@ export default function GoalTimeline({
 
 function GoalPlanWeeks({ plan }: { plan: GoalPlan }) {
   // Au-delà de 14 semaines, la phase de base est condensée par mois pour rester lisible ; le
-  // détail semaine par semaine est conservé pour le bloc spécifique et l'affûtage, la partie qui
-  // compte le plus à l'approche de l'objectif.
+  // détail semaine par semaine (avec le détail de chaque séance) est conservé pour le bloc
+  // spécifique et l'affûtage, la partie qui compte le plus à l'approche de l'objectif.
   const condense = plan.weeks.length > 14;
   const specificStartIdx = plan.weeks.findIndex((w) => w.phase !== "base");
   const detailStart = specificStartIdx === -1 ? 0 : specificStartIdx;
@@ -242,7 +391,8 @@ function GoalPlanWeeks({ plan }: { plan: GoalPlan }) {
               </div>
               <div className="goal-week-km">≈ {avgKm} km/sem.</div>
               <div className="goal-week-sessions">
-                {ws.length} semaine{ws.length > 1 ? "s" : ""} de montée progressive du volume
+                {ws.length} semaine{ws.length > 1 ? "s" : ""} de montée progressive du volume — voir le
+                détail des séances une fois dans le bloc spécifique.
               </div>
             </div>
           );
@@ -270,7 +420,17 @@ function GoalWeekRow({ week }: { week: GoalPlan["weeks"][number] }) {
         {fmtDate(week.startDate)} · {PHASE_LABEL[week.phase]}
       </div>
       <div className="goal-week-km">{week.km} km</div>
-      <div className="goal-week-sessions">{week.sessions.join(" · ")}</div>
+      <div className="goal-week-sessions">
+        {week.sessions.map((s, i) => (
+          <div className="goal-session" key={i}>
+            <span className="legend-swatch goal-session-dot" style={{ background: ZONE_COLOR_VAR[s.zoneLabel] }} />
+            <span>
+              <span className="goal-session-label">{s.label}</span>
+              <span className="goal-session-detail"> — {s.detail}</span>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
