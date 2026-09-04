@@ -30,21 +30,39 @@ export async function GET() {
     return NextResponse.json({ error: "session_expired" }, { status: 401 });
   }
 
-  const after = new Date();
-  after.setMonth(after.getMonth() - MONTHS_BACK);
-  const afterUnix = Math.floor(after.getTime() / 1000);
-
   try {
-    const [activities, zones] = await Promise.all([
-      fetchRunningActivities(accessToken, afterUnix),
+    // On récupère tout l'historique en un seul passage (borné à 2000 activités par le
+    // garde-fou de fetchRunningActivities) : les records doivent pouvoir remonter à un
+    // marathon ou un 10 km couru il y a plusieurs années, pas seulement aux 18 derniers mois
+    // utilisés pour le reste du tableau de bord (tendances, volume, phase de forme). On dérive
+    // ensuite la fenêtre récente par un simple filtre, plutôt que de refaire un appel Strava.
+    const [allActivities, zones] = await Promise.all([
+      fetchRunningActivities(accessToken, 0),
       fetchAthleteZones(accessToken).catch(() => null),
     ]);
 
-    if (activities.length === 0) {
+    if (allActivities.length === 0) {
       return NextResponse.json({ error: "no_activities" }, { status: 200 });
     }
 
-    const data = buildDashboardData(activities, zones, session.athleteName ?? "Athlète");
+    const recentCutoff = new Date();
+    recentCutoff.setMonth(recentCutoff.getMonth() - MONTHS_BACK);
+    const recentCutoffMs = recentCutoff.getTime();
+    const recentActivities = allActivities.filter(
+      (a) => new Date(a.start_date_local).getTime() >= recentCutoffMs
+    );
+    // Si l'athlète n'a rien couru depuis plus de MONTHS_BACK mois, on affiche quand même le
+    // tableau de bord (records compris) à partir de ses sorties les plus récentes plutôt que
+    // d'afficher un écran vide.
+    const activitiesForDashboard = recentActivities.length > 0 ? recentActivities : allActivities.slice(-30);
+
+    const data = buildDashboardData(
+      activitiesForDashboard,
+      zones,
+      session.athleteName ?? "Athlète",
+      new Date(),
+      allActivities
+    );
     return NextResponse.json({ data });
   } catch (e: any) {
     const message = e?.message ?? "Erreur inconnue lors de la récupération des données Strava.";

@@ -175,11 +175,22 @@ export function buildDashboardData(
   activities: StravaActivity[],
   zonesRaw: AthleteZones | null,
   athleteName: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  allActivities?: StravaActivity[]
 ): DashboardData {
   const sorted = [...activities].sort(
     (a, b) => new Date(a.start_date_local).getTime() - new Date(b.start_date_local).getTime()
   );
+
+  // Les records (meilleurs temps par distance) doivent chercher dans tout l'historique
+  // disponible, pas seulement la fenêtre récente utilisée pour le reste du tableau de bord —
+  // sinon un marathon ou un 10 km couru il y a plus de 18 mois n'apparaît jamais. Si l'appelant
+  // ne fournit pas cet historique complet, on retombe sur la même fenêtre que le reste.
+  const sortedAll = allActivities
+    ? [...allActivities].sort(
+        (a, b) => new Date(a.start_date_local).getTime() - new Date(b.start_date_local).getTime()
+      )
+    : sorted;
 
   const totalDistKm = sorted.reduce((s, a) => s + a.distance / 1000, 0);
   const totalRuns = sorted.length;
@@ -334,9 +345,9 @@ export function buildDashboardData(
   // ---- compte rendu de la toute dernière sortie ----
   const lastRun = buildLastRunReview(sorted, zones, recommendations);
 
-  // ---- estimations de temps de course et records ----
+  // ---- estimations de temps de course (forme récente) et records (tout l'historique) ----
   const raceEstimates = buildRaceEstimates(sorted, now);
-  const records = buildRecords(sorted);
+  const records = buildRecords(sortedAll);
 
   return {
     athleteName,
@@ -775,31 +786,51 @@ export function riegelProjectTime(
   return refTimeMin * Math.pow(targetDistKm / refDistKm, exponent);
 }
 
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
+}
+
 /**
- * Estime les temps sur 5, 10, semi et marathon à partir de la meilleure performance récente
- * (formule de Riegel), avec une prudence explicite sur le marathon quand aucune sortie longue
- * ne vient étayer l'extrapolation.
+ * Estime les temps sur 5, 10, semi et marathon à partir de la forme du moment (formule de
+ * Riegel), avec une prudence explicite sur le marathon quand aucune sortie longue ne vient
+ * étayer l'extrapolation.
+ *
+ * Pour refléter la forme « du moment » plutôt qu'une seule sortie qui pourrait être un coup
+ * isolé (bon ou mauvais), on regarde les sorties des ~2 derniers mois (repli à 4 mois si les
+ * données récentes sont trop rares), on ramène chacune à un temps équivalent sur 10 km, et on
+ * prend la médiane des meilleures d'entre elles comme référence.
  */
 function buildRaceEstimates(sorted: StravaActivity[], now: Date): RaceEstimates | null {
-  const cutoff = now.getTime() - 120 * MS_DAY;
-  const candidates = sorted.filter(
-    (a) => a.distance >= 3000 && a.moving_time > 0 && new Date(a.start_date_local).getTime() >= cutoff
-  );
+  const inWindow = (days: number) => {
+    const cutoff = now.getTime() - days * MS_DAY;
+    return sorted.filter(
+      (a) => a.distance >= 3000 && a.moving_time > 0 && new Date(a.start_date_local).getTime() >= cutoff
+    );
+  };
+
+  let windowDays = 60;
+  let candidates = inWindow(windowDays);
+  if (candidates.length < 3) {
+    const wider = inWindow(120);
+    if (wider.length > candidates.length) {
+      candidates = wider;
+      windowDays = 120;
+    }
+  }
   if (candidates.length === 0) return null;
 
-  let best: { a: StravaActivity; predicted10k: number } | null = null;
-  for (const a of candidates) {
-    const distKm = a.distance / 1000;
-    const timeMin = a.moving_time / 60;
-    const predicted10k = riegelProjectTime(distKm, timeMin, 10);
-    if (!best || predicted10k < best.predicted10k) best = { a, predicted10k };
-  }
-  if (!best) return null;
+  // Chaque sortie ramenée à un temps équivalent sur 10 km ; on garde les meilleures (jusqu'à 3)
+  // et on en prend la médiane, pour lisser un coup isolé sans diluer vers l'allure des sorties
+  // faciles, très majoritaires dans le volume d'entraînement.
+  const projected = candidates
+    .map((a) => ({ a, predicted10k: riegelProjectTime(a.distance / 1000, a.moving_time / 60, 10) }))
+    .sort((x, y) => x.predicted10k - y.predicted10k);
+  const sample = projected.slice(0, Math.min(3, projected.length));
 
-  const refDistKm = best.a.distance / 1000;
-  const refTimeMin = best.a.moving_time / 60;
-  const refDate = best.a.start_date_local.slice(0, 10);
-  const refPace = refTimeMin / refDistKm;
+  const refDistKm = 10;
+  const refTimeMin = median(sample.map((s) => s.predicted10k));
   const longestRecentKm = Math.max(...candidates.map((a) => a.distance / 1000));
 
   const estimates: RaceEstimate[] = STANDARD_RACE_DISTANCES.map((d) => {
@@ -825,12 +856,20 @@ function buildRaceEstimates(sorted: StravaActivity[], now: Date): RaceEstimates 
       ? "Estimation à confirmer par quelques sorties longues supplémentaires à l'approche de l'objectif."
       : null;
 
+  const basisLabel =
+    sample.length >= 2
+      ? `Basé sur tes ${sample.length} meilleures sorties des ${windowDays} derniers jours (équivalent 10 km ≈ ${formatDuration(
+          Math.round(refTimeMin * 60)
+        )}).`
+      : `Basé sur ta seule sortie récente exploitable, le ${new Date(
+          sample[0].a.start_date_local
+        ).toLocaleDateString("fr-FR", { day: "2-digit", month: "long" })} (${(
+          sample[0].a.distance / 1000
+        ).toFixed(1)} km) — quelques sorties de plus affineront cette estimation.`;
+
   return {
     estimates,
-    basisLabel: `Basé sur ta sortie du ${new Date(refDate).toLocaleDateString("fr-FR", {
-      day: "2-digit",
-      month: "long",
-    })} (${refDistKm.toFixed(1)} km à ${formatPace(refPace)}).`,
+    basisLabel,
     marathonCaveat,
     refDistKm,
     refTimeMin,
