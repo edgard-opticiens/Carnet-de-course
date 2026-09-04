@@ -28,6 +28,11 @@ export default function WorkoutCards({ workouts }: { workouts: WorkoutCard[] }) 
             <div>
               <b>Cible —</b> {w.cible}
             </div>
+            {w.paceHint && (
+              <div>
+                <b>Allure —</b> {w.paceHint}
+              </div>
+            )}
           </div>
           <p className="workout-why">{w.why}</p>
         </div>

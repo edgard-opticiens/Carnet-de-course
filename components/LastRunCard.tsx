@@ -70,7 +70,9 @@ export default function LastRunCard({ run }: { run: LastRunReview }) {
               <div className="lastrun-next-block">
                 <div className="lastrun-next-label">Proposition pour la prochaine sortie</div>
                 <p>
-                  <b>{run.nextWorkout.title}</b> — {run.nextWorkout.duree}. {run.nextWorkoutRationale}
+                  <b>{run.nextWorkout.title}</b> — {run.nextWorkout.duree}.
+                  {run.nextWorkout.paceHint ? ` Allure visée : ${run.nextWorkout.paceHint}.` : ""}{" "}
+                  {run.nextWorkoutRationale}
                 </p>
               </div>
             )}

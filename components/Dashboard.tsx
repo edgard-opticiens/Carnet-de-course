@@ -164,7 +164,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
             <span className="section-note">à introduire dans cet ordre</span>
           </div>
           <p className="lede">
-            Des formats concrets calés sur tes propres zones de fréquence cardiaque.
+            Des formats concrets calés sur tes propres zones de fréquence cardiaque, avec une
+            allure indicative déduite de tes sorties passées quand les données sont suffisantes.
           </p>
           <WorkoutCards workouts={data.recommendations.workouts} />
         </div>

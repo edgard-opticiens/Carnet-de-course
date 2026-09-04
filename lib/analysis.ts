@@ -43,6 +43,7 @@ export interface WorkoutCard {
   freq: string;
   duree: string;
   cible: string;
+  paceHint: string | null;
   why: string;
 }
 
@@ -272,7 +273,8 @@ export function buildDashboardData(
   }));
 
   // ---- recommandations générées par règles ----
-  const recommendations = buildRecommendations(compare, paceTrend, zones);
+  const paceByZone = buildPaceByZone(sorted, zones);
+  const recommendations = buildRecommendations(compare, paceTrend, zones, paceByZone);
 
   // ---- compte rendu de la toute dernière sortie ----
   const lastRun = buildLastRunReview(sorted, zones, recommendations);
@@ -518,10 +520,57 @@ function buildLastRunReview(
   };
 }
 
+/**
+ * Regroupe les allures réellement courues (min/km) par zone de FC atteinte, à partir de
+ * l'historique complet des sorties — la base empirique qui permet de proposer des allures
+ * personnalisées plutôt qu'une formule générique.
+ */
+function buildPaceByZone(sorted: StravaActivity[], zones: ZoneBound[]): Map<number, number[]> {
+  const byZone = new Map<number, number[]>();
+  if (zones.length < 4) return byZone;
+  for (const a of sorted) {
+    if (!a.has_heartrate || !a.average_heartrate || !a.average_speed) continue;
+    if (a.distance < 1500) continue; // trop court pour être représentatif
+    const z = zoneIndexForHr(a.average_heartrate, zones);
+    if (z === null) continue;
+    const pace = paceFromSpeed(a.average_speed);
+    if (pace <= 0) continue;
+    if (!byZone.has(z)) byZone.set(z, []);
+    byZone.get(z)!.push(pace);
+  }
+  return byZone;
+}
+
+/** Fourchette d'allure (20e-80e percentile, pour ignorer les valeurs extrêmes) sur un groupe de zones. */
+function paceRangeForZones(
+  byZone: Map<number, number[]>,
+  zoneNums: number[]
+): { lo: number; hi: number; n: number } | null {
+  const paces = zoneNums.flatMap((z) => byZone.get(z) ?? []);
+  if (paces.length < 3) return null;
+  const asc = [...paces].sort((a, b) => a - b);
+  const pct = (p: number) => asc[Math.min(asc.length - 1, Math.floor(p * (asc.length - 1)))];
+  return { lo: pct(0.2), hi: pct(0.8), n: paces.length };
+}
+
+function fmtPaceValue(decimalMinPerKm: number): string {
+  const min = Math.floor(decimalMinPerKm);
+  const sec = Math.round((decimalMinPerKm - min) * 60);
+  const mm = sec === 60 ? min + 1 : min;
+  const ss = sec === 60 ? 0 : sec;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
+}
+
+function formatPaceRange(range: { lo: number; hi: number } | null): string | null {
+  if (!range) return null;
+  return `${fmtPaceValue(range.lo)} à ${fmtPaceValue(range.hi)}/km`;
+}
+
 function buildRecommendations(
   compare: { prevKm: number; currKm: number },
   paceTrend: PaceTrendPoint[],
-  zones: ZoneBound[]
+  zones: ZoneBound[],
+  paceByZone: Map<number, number[]>
 ): Recommendations {
   const prevWeekly = compare.prevKm / 8;
   const currWeekly = compare.currKm / 8;
@@ -557,6 +606,11 @@ function buildRecommendations(
   // Allures grossièrement calées sur les zones réelles, si suffisamment de points.
   const zoneHint = zones.length >= 4 && paceTrend.length >= 4;
 
+  // Allures personnalisées : dérivées des allures que le coureur a réellement tenues,
+  // à chaque fois que sa FC est tombée dans la zone visée par le format proposé.
+  const easyRange = formatPaceRange(paceRangeForZones(paceByZone, [1, 2]));
+  const fastRange = formatPaceRange(paceRangeForZones(paceByZone, [3, 4]));
+
   const workouts: WorkoutCard[] = [
     {
       n: 1,
@@ -567,6 +621,7 @@ function buildRecommendations(
       cible: zoneHint
         ? `Z1-Z2 (FC < ${zones[2]?.min ?? "..."} bpm environ)`
         : "Z1-Z2 : allure conversation, sans forcer",
+      paceHint: easyRange,
       why: "Le socle de toute reprise ou progression : construire le volume aérobie sans stress supplémentaire.",
     },
     {
@@ -576,6 +631,7 @@ function buildRecommendations(
       freq: `1 fois / semaine${phase === "reconstruction" ? ", à partir de la semaine 3-4" : ""}`,
       duree: "25 à 30 min dont 6 à 8 x 1 min plus soutenu / 2 min très facile",
       cible: "Portions rapides en Z3-Z4, à la sensation plutôt qu'au chrono",
+      paceHint: fastRange ? `portions rapides : ${fastRange}` : null,
       why: "Un format simple pour réintroduire du rythme sans le choc d'un fractionné classique.",
     },
     {
@@ -585,6 +641,7 @@ function buildRecommendations(
       freq: "1 fois / semaine, la plus longue",
       duree: "part de ta distance actuelle, +1 km environ toutes les 1 à 2 semaines",
       cible: "Z1-Z2 strict, aucune pression d'allure",
+      paceHint: easyRange,
       why: "Le levier n°1 pour bâtir un plancher aérobie avant tout travail de dénivelé ou de vitesse.",
     },
     {
@@ -594,6 +651,7 @@ function buildRecommendations(
       freq: "1 fois / semaine dans le bloc spécifique avant un objectif",
       duree: "6 à 10 répétitions de côtes de 200 à 400 m, retour en footing",
       cible: "Montée en Z4-Z5, récupération complète en descente",
+      paceHint: "non pertinent en côtes — vise l'effort et la FC, pas le chrono",
       why: "Prépare spécifiquement le dénivelé si un objectif trail ou une course vallonnée approche.",
     },
   ];
