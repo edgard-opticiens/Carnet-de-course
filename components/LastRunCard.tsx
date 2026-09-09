@@ -77,6 +77,23 @@ export default function LastRunCard({ run }: { run: LastRunReview }) {
                     <span>dérive FC (1res → dernières reps)</span>
                   </div>
                 )}
+                {run.intervalAnalysis.targetComparison && (
+                  <div className="lastrun-interval-item">
+                    <b>
+                      {run.intervalAnalysis.targetComparison.repsMin === run.intervalAnalysis.targetComparison.repsMax
+                        ? run.intervalAnalysis.targetComparison.repsMin
+                        : `${run.intervalAnalysis.targetComparison.repsMin}-${run.intervalAnalysis.targetComparison.repsMax}`}{" "}
+                      × {run.intervalAnalysis.targetComparison.distanceM} m
+                    </b>
+                    <span>format proposé du moment</span>
+                  </div>
+                )}
+                {run.intervalAnalysis.fitnessPaceLabel && (
+                  <div className="lastrun-interval-item">
+                    <b>{run.intervalAnalysis.fitnessPaceLabel}</b>
+                    <span>allure 5 km actuelle (repère forme)</span>
+                  </div>
+                )}
               </div>
             </div>
           )}

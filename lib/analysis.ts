@@ -38,6 +38,17 @@ export interface ZoneBound {
 
 export type WorkoutKey = "ef" | "sortieLongue" | "fartlek" | "fractionne" | "cotes";
 
+/** Un format de répétitions valide pour la séance de fractionné actuellement proposée
+ * (plusieurs formats possibles en phase de progression, ex. 400 m ou 1000 m). */
+export interface FractionneTargetOption {
+  distanceM: number;
+  repsMin: number;
+  repsMax: number;
+  recoveryM: number | null;
+  recoverySecMin: number | null;
+  recoverySecMax: number | null;
+}
+
 export interface WorkoutCard {
   key: WorkoutKey;
   n: number;
@@ -48,6 +59,7 @@ export interface WorkoutCard {
   cible: string;
   paceHint: string | null;
   why: string;
+  intervalTarget?: FractionneTargetOption[];
 }
 
 export interface Recommendations {
@@ -82,6 +94,21 @@ export interface IntervalAnalysis {
   paceTrendKind: "stable" | "progressif" | "fatigue";
   consistencyLabel: string;
   matchesRecommendation: boolean;
+  /** Comparaison fine entre la séance réalisée et le format précis actuellement proposé
+   * (répétitions/distance/récupération) — null si le fractionné n'est pas dans les sorties du
+   * moment, ou si aucun format proposé n'est assez proche de la distance réalisée. */
+  targetComparison: {
+    distanceM: number;
+    repsMin: number;
+    repsMax: number;
+    recoveryLabel: string | null;
+    verdict: "conforme" | "moins" | "plus" | "distance_differente";
+  } | null;
+  /** Allure des répétitions comparée à une allure 5 km projetée depuis la forme du moment
+   * (mêmes sorties récentes que les estimations de temps de course) — un repère "réaliste et
+   * motivant" ancré sur le niveau actuel plutôt que sur l'historique complet. */
+  fitnessPaceLabel: string | null;
+  fitnessComparisonKind: "plus_rapide" | "proche" | "plus_lent" | null;
 }
 
 export interface LastRunReview {
@@ -371,11 +398,13 @@ export function buildDashboardData(
   // ---- recommandations générées par règles ----
   const recommendations = buildRecommendations(compare, zones, workoutPaceHints, avgElevPerKmRecent);
 
-  // ---- compte rendu de la toute dernière sortie ----
-  const lastRun = buildLastRunReview(sorted, zones, recommendations, paceByZone, lastRunLaps);
-
-  // ---- estimations de temps de course (forme récente) et records (tout l'historique) ----
+  // ---- estimations de temps de course (forme récente), calculées avant le compte rendu de la
+  // dernière sortie pour pouvoir y situer l'allure de fractionné par rapport au niveau actuel ----
   const raceEstimates = buildRaceEstimates(sorted, now);
+
+  // ---- compte rendu de la toute dernière sortie ----
+  const lastRun = buildLastRunReview(sorted, zones, recommendations, paceByZone, lastRunLaps, raceEstimates);
+
   const records = buildRecords(sortedAll);
 
   return {
@@ -429,7 +458,8 @@ function buildLastRunReview(
   zones: ZoneBound[],
   recommendations: Recommendations,
   paceByZone: Map<number, number[]>,
-  lastRunLaps?: StravaLap[] | null
+  lastRunLaps?: StravaLap[] | null,
+  raceEstimates?: RaceEstimates | null
 ): LastRunReview | null {
   if (sorted.length === 0) return null;
   const last = sorted[sorted.length - 1];
@@ -440,9 +470,13 @@ function buildLastRunReview(
   // Reconnaissance d'une séance fractionnée à partir des tours (laps) de la montre, indépendamment
   // du tag manuel Strava (workout_type). Si détectée, on traite la sortie comme une "séance" pour
   // le reste de l'analyse (repos conseillé, prochaine sortie...), même si Strava dit autre chose.
-  const intervalAnalysis = lastRunLaps ? analyzeIntervalStructure(lastRunLaps, paceByZone) : null;
+  const fractionneCard = recommendations.workouts.find((w) => w.key === "fractionne") ?? null;
+  const fitnessRef = raceEstimates ? { refDistKm: raceEstimates.refDistKm, refTimeMin: raceEstimates.refTimeMin } : null;
+  const intervalAnalysis = lastRunLaps
+    ? analyzeIntervalStructure(lastRunLaps, paceByZone, fractionneCard?.intervalTarget ?? null, fitnessRef)
+    : null;
   if (intervalAnalysis) {
-    intervalAnalysis.matchesRecommendation = recommendations.workouts.some((w) => w.key === "fractionne");
+    intervalAnalysis.matchesRecommendation = fractionneCard !== null;
   }
   const typeLabel: WorkoutTypeLabel = intervalAnalysis ? "séance" : workoutTypeLabel(last.workout_type);
   const isEasyContext = typeLabel === "sortie" || typeLabel === "sortie longue";
@@ -522,10 +556,47 @@ function buildLastRunReview(
         );
       }
     }
-    if (intervalAnalysis.matchesRecommendation) {
+    if (intervalAnalysis.targetComparison) {
+      const tc = intervalAnalysis.targetComparison;
+      const repsLabel = tc.repsMin === tc.repsMax ? `${tc.repsMin}` : `${tc.repsMin} à ${tc.repsMax}`;
+      const targetLabel = `${repsLabel} x ${tc.distanceM} m${tc.recoveryLabel ? ` (récup. ${tc.recoveryLabel})` : ""}`;
+      const doneLabel = `${intervalAnalysis.repCount} x ${intervalAnalysis.repDistanceM} m`;
+      if (tc.verdict === "conforme") {
+        positives.push(
+          `Format conforme à la séance actuellement proposée (${targetLabel}) : tu as fait ${doneLabel} — belle mise en application du programme.`
+        );
+      } else if (tc.verdict === "moins") {
+        positives.push(
+          `Un peu en dessous du format proposé (${targetLabel}), tu as fait ${doneLabel} : reste cohérent si tu gérais ta charge ce jour-là, sinon vise le haut de la fourchette la prochaine fois.`
+        );
+      } else if (tc.verdict === "plus") {
+        positives.push(
+          `Au-dessus du format proposé (${targetLabel}), tu as fait ${doneLabel} : beau volume, à condition que l'allure soit restée tenue jusqu'au bout des dernières répétitions.`
+        );
+      } else {
+        positives.push(
+          `Format différent de la séance proposée (${targetLabel}) : tu as travaillé sur du ${intervalAnalysis.repDistanceM} m — pas un souci en soi, juste un format différent de la suggestion du moment.`
+        );
+      }
+    } else if (intervalAnalysis.matchesRecommendation) {
       positives.push(
-        "Cette séance correspond au fractionné actuellement proposé dans « Sorties pour progresser » — belle mise en application du programme."
+        "Le fractionné fait partie des sorties actuellement proposées dans « Sorties pour progresser » — belle mise en application du programme."
       );
+    }
+    if (intervalAnalysis.fitnessComparisonKind && intervalAnalysis.fitnessPaceLabel) {
+      if (intervalAnalysis.fitnessComparisonKind === "plus_rapide") {
+        positives.push(
+          `Allure des répétitions nettement plus rapide que ton allure 5 km actuelle estimée (${intervalAnalysis.fitnessPaceLabel}) : un vrai travail de vitesse, cohérent avec ta forme du moment.`
+        );
+      } else if (intervalAnalysis.fitnessComparisonKind === "proche") {
+        positives.push(
+          `Allure des répétitions proche de ton allure 5 km actuelle estimée (${intervalAnalysis.fitnessPaceLabel}) : correct, mais vu ta forme du moment tu as sans doute encore de la marge pour aller plus vite sur un format aussi court.`
+        );
+      } else {
+        watchouts.push(
+          `Allure des répétitions plus lente que ton allure 5 km actuelle estimée (${intervalAnalysis.fitnessPaceLabel}) : pas assez soutenu pour un vrai stimulus de vitesse au vu de ta forme du moment.`
+        );
+      }
     }
   } else if (avgBaselinePace !== null && avgBaselinePace > 0) {
     const paceDeltaPct = ((lastPace - avgBaselinePace) / avgBaselinePace) * 100;
@@ -763,7 +834,9 @@ interface LapWork {
  */
 function analyzeIntervalStructure(
   laps: StravaLap[],
-  paceByZone: Map<number, number[]>
+  paceByZone: Map<number, number[]>,
+  targetOptions: FractionneTargetOption[] | null,
+  fitnessRef: { refDistKm: number; refTimeMin: number } | null
 ): IntervalAnalysis | null {
   if (!laps || laps.length < 5) return null;
 
@@ -867,9 +940,69 @@ function analyzeIntervalStructure(
       ? `≈ ${Math.round(avgRecoveryDist)} m en ${formatDuration(Math.round(avgRecoveryTime))}`
       : "non détaillée";
 
+  const repDistanceM = Math.round(avgRepDistance / 50) * 50;
+
+  // ---- comparaison fine avec le format précis de la séance actuellement proposée ----
+  // On choisit, parmi les formats possibles (400 m et/ou 1000 m selon la phase), celui dont la
+  // distance est la plus proche de ce qui a été réellement couru ; au-delà de 25 % d'écart, on
+  // considère qu'il ne s'agit pas du même format plutôt que de forcer un rapprochement trompeur.
+  let targetComparison: IntervalAnalysis["targetComparison"] = null;
+  if (targetOptions && targetOptions.length > 0) {
+    let closest = targetOptions[0];
+    let closestDelta = Math.abs(repDistanceM - closest.distanceM) / closest.distanceM;
+    for (const opt of targetOptions.slice(1)) {
+      const delta = Math.abs(repDistanceM - opt.distanceM) / opt.distanceM;
+      if (delta < closestDelta) {
+        closest = opt;
+        closestDelta = delta;
+      }
+    }
+    const recoveryTargetLabel =
+      closest.recoveryM !== null
+        ? `${closest.recoveryM} m`
+        : closest.recoverySecMin !== null && closest.recoverySecMax !== null
+        ? `${Math.round(closest.recoverySecMin / 60)} à ${Math.round(closest.recoverySecMax / 60)} min`
+        : null;
+    if (closestDelta > 0.25) {
+      targetComparison = {
+        distanceM: closest.distanceM,
+        repsMin: closest.repsMin,
+        repsMax: closest.repsMax,
+        recoveryLabel: recoveryTargetLabel,
+        verdict: "distance_differente",
+      };
+    } else {
+      const verdict: "conforme" | "moins" | "plus" =
+        bestGroup.length < closest.repsMin ? "moins" : bestGroup.length > closest.repsMax ? "plus" : "conforme";
+      targetComparison = {
+        distanceM: closest.distanceM,
+        repsMin: closest.repsMin,
+        repsMax: closest.repsMax,
+        recoveryLabel: recoveryTargetLabel,
+        verdict,
+      };
+    }
+  }
+
+  // ---- allure des répétitions replacée par rapport à la forme du moment (pas l'historique
+  // complet) : on projette une allure 5 km depuis la même référence que les estimations de temps
+  // de course, pour un repère réaliste et motivant ancré sur le niveau actuel de l'athlète ----
+  let fitnessPaceLabel: string | null = null;
+  let fitnessComparisonKind: IntervalAnalysis["fitnessComparisonKind"] = null;
+  if (fitnessRef && fitnessRef.refTimeMin > 0) {
+    const proj5kTimeMin = riegelProjectTime(fitnessRef.refDistKm, fitnessRef.refTimeMin, 5);
+    const proj5kPace = proj5kTimeMin / 5;
+    if (proj5kPace > 0) {
+      fitnessPaceLabel = formatPace(proj5kPace);
+      if (avgRepPace <= proj5kPace * 0.95) fitnessComparisonKind = "plus_rapide";
+      else if (avgRepPace >= proj5kPace * 1.02) fitnessComparisonKind = "plus_lent";
+      else fitnessComparisonKind = "proche";
+    }
+  }
+
   return {
     repCount: bestGroup.length,
-    repDistanceM: Math.round(avgRepDistance / 50) * 50,
+    repDistanceM,
     repPaceLabel: formatPace(avgRepPace),
     repPaceRangeLabel: `${fmtPaceValue(fastest)} à ${fmtPaceValue(slowest)}/km`,
     recoveryCount: recoveryLaps.length,
@@ -880,6 +1013,9 @@ function analyzeIntervalStructure(
     paceTrendKind,
     consistencyLabel,
     matchesRecommendation: false,
+    targetComparison,
+    fitnessPaceLabel,
+    fitnessComparisonKind,
   };
 }
 
@@ -895,6 +1031,19 @@ function buildWorkoutPaceHints(paceByZone: Map<number, number[]>): WorkoutPaceHi
     fartlekRange: bestPaceRange(paceByZone, [3], [3, 4]),
     fractionneRange: bestPaceRange(paceByZone, [4], [3, 4]),
   };
+}
+
+/** Formats de fractionné valides pour une phase donnée — la même logique que le texte `duree` de
+ * la carte "Fractionné", mais sous forme structurée pour pouvoir comparer précisément une séance
+ * réalisée (reps × distance) au format effectivement proposé. */
+function fractionneIntervalTargets(phase: Recommendations["phase"]): FractionneTargetOption[] {
+  if (phase === "progression") {
+    return [
+      { distanceM: 400, repsMin: 8, repsMax: 12, recoveryM: 200, recoverySecMin: null, recoverySecMax: null },
+      { distanceM: 1000, repsMin: 5, repsMax: 6, recoveryM: null, recoverySecMin: 120, recoverySecMax: 180 },
+    ];
+  }
+  return [{ distanceM: 400, repsMin: 6, repsMax: 8, recoveryM: 200, recoverySecMin: null, recoverySecMax: null }];
 }
 
 function buildRecommendations(
@@ -976,6 +1125,7 @@ function buildRecommendations(
       cible: "Z4, allure nettement plus rapide que le fartlek, cette fois au chrono",
       paceHint: fractionneRange ? `répétitions : ${fractionneRange}` : null,
       why: "Un stimulus plus précis que le fartlek pour développer la VMA et l'économie de course.",
+      intervalTarget: fractionneIntervalTargets(phase),
     },
     {
       key: "cotes",
