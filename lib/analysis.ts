@@ -1,4 +1,4 @@
-import { AthleteZones, StravaActivity } from "./strava";
+import { AthleteZones, StravaActivity, StravaLap } from "./strava";
 
 export interface MonthlyPoint {
   month: string; // YYYY-MM
@@ -65,6 +65,25 @@ export interface WorkoutPaceHints {
 
 export type WorkoutTypeLabel = "sortie" | "course" | "sortie longue" | "séance";
 
+/**
+ * Analyse d'une structure fractionnée détectée dans les tours (laps) de la dernière sortie —
+ * reconnue automatiquement à partir des données de la montre, sans dépendre du tag manuel Strava.
+ */
+export interface IntervalAnalysis {
+  repCount: number;
+  repDistanceM: number;
+  repPaceLabel: string;
+  repPaceRangeLabel: string;
+  recoveryCount: number;
+  recoveryLabel: string;
+  targetPaceRange: string | null;
+  withinTarget: boolean | null;
+  hrDriftBpm: number | null;
+  paceTrendKind: "stable" | "progressif" | "fatigue";
+  consistencyLabel: string;
+  matchesRecommendation: boolean;
+}
+
 export interface LastRunReview {
   id: number;
   name: string;
@@ -83,6 +102,7 @@ export interface LastRunReview {
   restAdvice: string;
   nextWorkout: WorkoutCard | null;
   nextWorkoutRationale: string;
+  intervalAnalysis: IntervalAnalysis | null;
 }
 
 export interface RaceEstimate {
@@ -183,7 +203,8 @@ export function buildDashboardData(
   zonesRaw: AthleteZones | null,
   athleteName: string,
   now: Date = new Date(),
-  allActivities?: StravaActivity[]
+  allActivities?: StravaActivity[],
+  lastRunLaps?: StravaLap[] | null
 ): DashboardData {
   const sorted = [...activities].sort(
     (a, b) => new Date(a.start_date_local).getTime() - new Date(b.start_date_local).getTime()
@@ -351,7 +372,7 @@ export function buildDashboardData(
   const recommendations = buildRecommendations(compare, zones, workoutPaceHints, avgElevPerKmRecent);
 
   // ---- compte rendu de la toute dernière sortie ----
-  const lastRun = buildLastRunReview(sorted, zones, recommendations);
+  const lastRun = buildLastRunReview(sorted, zones, recommendations, paceByZone, lastRunLaps);
 
   // ---- estimations de temps de course (forme récente) et records (tout l'historique) ----
   const raceEstimates = buildRaceEstimates(sorted, now);
@@ -406,14 +427,24 @@ function workoutTypeLabel(wt: number | null | undefined): WorkoutTypeLabel {
 function buildLastRunReview(
   sorted: StravaActivity[],
   zones: ZoneBound[],
-  recommendations: Recommendations
+  recommendations: Recommendations,
+  paceByZone: Map<number, number[]>,
+  lastRunLaps?: StravaLap[] | null
 ): LastRunReview | null {
   if (sorted.length === 0) return null;
   const last = sorted[sorted.length - 1];
   const prevRuns = sorted.slice(0, -1);
   const lastDistKm = last.distance / 1000;
   const lastPace = paceFromSpeed(last.average_speed);
-  const typeLabel = workoutTypeLabel(last.workout_type);
+
+  // Reconnaissance d'une séance fractionnée à partir des tours (laps) de la montre, indépendamment
+  // du tag manuel Strava (workout_type). Si détectée, on traite la sortie comme une "séance" pour
+  // le reste de l'analyse (repos conseillé, prochaine sortie...), même si Strava dit autre chose.
+  const intervalAnalysis = lastRunLaps ? analyzeIntervalStructure(lastRunLaps, paceByZone) : null;
+  if (intervalAnalysis) {
+    intervalAnalysis.matchesRecommendation = recommendations.workouts.some((w) => w.key === "fractionne");
+  }
+  const typeLabel: WorkoutTypeLabel = intervalAnalysis ? "séance" : workoutTypeLabel(last.workout_type);
   const isEasyContext = typeLabel === "sortie" || typeLabel === "sortie longue";
 
   // Bassin de comparaison : sorties de distance comparable parmi les 20 précédentes,
@@ -458,7 +489,45 @@ function buildLastRunReview(
     positives.push("Nouveau record personnel enregistré sur cette sortie.");
   }
 
-  if (avgBaselinePace !== null && avgBaselinePace > 0) {
+  if (intervalAnalysis) {
+    positives.push(
+      `Séance fractionnée reconnue à partir des données de la montre : ${intervalAnalysis.repCount} × ${intervalAnalysis.repDistanceM} m à ${intervalAnalysis.repPaceLabel} (entre ${intervalAnalysis.repPaceRangeLabel}), récupération ${intervalAnalysis.recoveryLabel}.`
+    );
+    if (intervalAnalysis.targetPaceRange && intervalAnalysis.withinTarget) {
+      positives.push(
+        `Allure des répétitions cohérente avec ta zone d'allure fractionné habituelle (${intervalAnalysis.targetPaceRange}).`
+      );
+    } else if (intervalAnalysis.targetPaceRange && intervalAnalysis.withinTarget === false) {
+      watchouts.push(
+        `Allure des répétitions (${intervalAnalysis.repPaceLabel}) en dehors de ta zone fractionné habituelle (${intervalAnalysis.targetPaceRange}) — à surveiller si ce n'est pas volontaire.`
+      );
+    }
+    if (intervalAnalysis.paceTrendKind === "fatigue") {
+      watchouts.push(
+        `Allure ${intervalAnalysis.consistencyLabel} — souvent le signe d'un départ trop rapide ou d'une fatigue qui s'installe.`
+      );
+    } else if (intervalAnalysis.paceTrendKind === "progressif") {
+      positives.push(`Séance ${intervalAnalysis.consistencyLabel} : bon signe de gestion de l'effort.`);
+    } else {
+      positives.push(`Allure ${intervalAnalysis.consistencyLabel} sur l'ensemble des répétitions.`);
+    }
+    if (intervalAnalysis.hrDriftBpm !== null) {
+      if (intervalAnalysis.hrDriftBpm >= 8) {
+        watchouts.push(
+          `FC en hausse de ${intervalAnalysis.hrDriftBpm} bpm entre les premières et les dernières répétitions : dérive assez marquée, normal en fin de séance mais à garder à l'œil si ça s'accentue.`
+        );
+      } else {
+        positives.push(
+          `FC restée stable entre le début et la fin de la séance (+${intervalAnalysis.hrDriftBpm} bpm) : bonne gestion de l'effort.`
+        );
+      }
+    }
+    if (intervalAnalysis.matchesRecommendation) {
+      positives.push(
+        "Cette séance correspond au fractionné actuellement proposé dans « Sorties pour progresser » — belle mise en application du programme."
+      );
+    }
+  } else if (avgBaselinePace !== null && avgBaselinePace > 0) {
     const paceDeltaPct = ((lastPace - avgBaselinePace) / avgBaselinePace) * 100;
     const climbedMore =
       avgBaselineElevPerKm !== null && lastElevPerKm > avgBaselineElevPerKm * 1.5;
@@ -488,7 +557,7 @@ function buildLastRunReview(
     }
   }
 
-  if (typicalDistanceKm !== null) {
+  if (!intervalAnalysis && typicalDistanceKm !== null) {
     if (lastDistKm >= typicalDistanceKm * 1.15) {
       positives.push(
         `Sortie plus longue que ta moyenne récente (${lastDistKm.toFixed(1)} km contre ${typicalDistanceKm.toFixed(
@@ -616,6 +685,7 @@ function buildLastRunReview(
     restAdvice,
     nextWorkout,
     nextWorkoutRationale,
+    intervalAnalysis,
   };
 }
 
@@ -668,6 +738,149 @@ function formatPaceRange(range: { lo: number; hi: number } | null): string | nul
 /** Essaie d'abord une zone précise, puis élargit si l'échantillon est trop faible pour être fiable. */
 function bestPaceRange(byZone: Map<number, number[]>, primary: number[], fallback: number[]): string | null {
   return formatPaceRange(paceRangeForZones(byZone, primary)) ?? formatPaceRange(paceRangeForZones(byZone, fallback));
+}
+
+interface LapWork {
+  index: number;
+  distance: number;
+  time: number;
+  pace: number; // décimal minutes/km
+  hr: number | null;
+}
+
+/**
+ * Reconnaît une structure fractionnée (répétitions + récupérations) dans les tours (laps)
+ * enregistrés par la montre, sans dépendre du tag manuel Strava. Heuristique validée à la main sur
+ * une vraie séance de l'athlète (échauffement 20', 8 × 400 m / 200 m récup, retour au calme) :
+ * - un tour "travail" est nettement plus rapide que l'allure médiane de la sortie (≤ 92 %) et fait
+ *   entre 100 m et 2 km — ce qui exclut d'emblée l'échauffement et le retour au calme ;
+ * - on regroupe ces tours par distance arrondie au 50 m le plus proche pour isoler la distance de
+ *   répétition dominante (8 × 400 m plutôt qu'un mélange de fragments) ; il en faut au moins 3 pour
+ *   parler de séance structurée plutôt que de simples accélérations isolées ;
+ * - un tour "récupération" est un tour non-travail directement adjacent (index ± 1) à un tour de
+ *   travail, et pas trop long (≤ max(600 m, 1,5 × distance de répétition)) — ce qui exclut à nouveau
+ *   l'échauffement et le retour au calme, qui sont adjacents mais bien plus longs.
+ */
+function analyzeIntervalStructure(
+  laps: StravaLap[],
+  paceByZone: Map<number, number[]>
+): IntervalAnalysis | null {
+  if (!laps || laps.length < 5) return null;
+
+  const items: LapWork[] = laps
+    .map((l, i) => ({
+      index: i,
+      distance: l.distance,
+      time: l.moving_time || l.elapsed_time,
+      pace: paceFromSpeed(l.average_speed),
+      hr: typeof l.average_heartrate === "number" ? l.average_heartrate : null,
+    }))
+    .filter((l) => l.pace > 0 && l.distance > 0);
+  if (items.length < 5) return null;
+
+  const medianPace = median(items.map((l) => l.pace));
+  const workCandidates = items.filter(
+    (l) => l.pace <= medianPace * 0.92 && l.distance >= 100 && l.distance <= 2000
+  );
+  if (workCandidates.length < 3) return null;
+
+  const roundTo50 = (d: number) => Math.round(d / 50) * 50;
+  const groups = new Map<number, LapWork[]>();
+  for (const w of workCandidates) {
+    const key = roundTo50(w.distance);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(w);
+  }
+  let bestGroup: LapWork[] = [];
+  for (const group of groups.values()) {
+    if (group.length > bestGroup.length) bestGroup = group;
+  }
+  if (bestGroup.length < 3) return null;
+
+  const workIndexes = new Set(bestGroup.map((w) => w.index));
+  const avgRepDistance = bestGroup.reduce((s, w) => s + w.distance, 0) / bestGroup.length;
+  const recoveryLimit = Math.max(600, avgRepDistance * 1.5);
+
+  const recoveryIndexes = new Set<number>();
+  for (const idx of workIndexes) {
+    for (const adjIdx of [idx - 1, idx + 1]) {
+      if (workIndexes.has(adjIdx)) continue;
+      const cand = items.find((l) => l.index === adjIdx);
+      if (cand && cand.distance <= recoveryLimit) recoveryIndexes.add(adjIdx);
+    }
+  }
+  const recoveryLaps = items.filter((l) => recoveryIndexes.has(l.index));
+
+  const repPacesAsc = bestGroup.map((w) => w.pace).sort((a, b) => a - b);
+  const avgRepPace = repPacesAsc.reduce((s, p) => s + p, 0) / repPacesAsc.length;
+  const fastest = repPacesAsc[0];
+  const slowest = repPacesAsc[repPacesAsc.length - 1];
+
+  // Tendance d'allure entre le début et la fin de la séance : une accélération progressive
+  // (répétitions de plus en plus rapides) est un bon signe de gestion de l'effort, alors qu'un
+  // ralentissement en fin de séance signale plutôt un départ trop rapide ou de la fatigue —
+  // l'écart-type seul ne fait pas cette distinction, d'où un calcul basé sur la tendance.
+  const sortedByIndex = [...bestGroup].sort((a, b) => a.index - b.index);
+  const firstTwoPace = sortedByIndex.slice(0, 2);
+  const lastTwoPace = sortedByIndex.slice(-2);
+  const avgFirstPace = firstTwoPace.reduce((s, l) => s + l.pace, 0) / firstTwoPace.length;
+  const avgLastPace = lastTwoPace.reduce((s, l) => s + l.pace, 0) / lastTwoPace.length;
+  const paceDriftSecPerKm = (avgLastPace - avgFirstPace) * 60;
+
+  let paceTrendKind: IntervalAnalysis["paceTrendKind"];
+  let consistencyLabel: string;
+  if (paceDriftSecPerKm >= 5) {
+    paceTrendKind = "fatigue";
+    consistencyLabel = "en perte de vitesse sur la fin de la séance";
+  } else if (paceDriftSecPerKm <= -5) {
+    paceTrendKind = "progressif";
+    consistencyLabel = "progressive : les dernières répétitions plus rapides que les premières";
+  } else {
+    paceTrendKind = "stable";
+    consistencyLabel = "régulière d'une répétition à l'autre";
+  }
+
+  let hrDriftBpm: number | null = null;
+  const withHr = sortedByIndex.filter((l) => l.hr !== null) as (LapWork & { hr: number })[];
+  if (withHr.length >= 4) {
+    const firstTwo = withHr.slice(0, 2);
+    const lastTwo = withHr.slice(-2);
+    const avgFirst = firstTwo.reduce((s, l) => s + l.hr, 0) / firstTwo.length;
+    const avgLast = lastTwo.reduce((s, l) => s + l.hr, 0) / lastTwo.length;
+    hrDriftBpm = Math.round(avgLast - avgFirst);
+  }
+
+  const targetRange = paceRangeForZones(paceByZone, [4]) ?? paceRangeForZones(paceByZone, [3, 4]);
+  const targetPaceRange = formatPaceRange(targetRange);
+  const withinTarget = targetRange
+    ? avgRepPace <= targetRange.hi * 1.05 && avgRepPace >= targetRange.lo * 0.85
+    : null;
+
+  const avgRecoveryTime =
+    recoveryLaps.length > 0 ? recoveryLaps.reduce((s, l) => s + l.time, 0) / recoveryLaps.length : null;
+  const avgRecoveryDist =
+    recoveryLaps.length > 0
+      ? recoveryLaps.reduce((s, l) => s + l.distance, 0) / recoveryLaps.length
+      : null;
+  const recoveryLabel =
+    avgRecoveryTime !== null && avgRecoveryDist !== null
+      ? `≈ ${Math.round(avgRecoveryDist)} m en ${formatDuration(Math.round(avgRecoveryTime))}`
+      : "non détaillée";
+
+  return {
+    repCount: bestGroup.length,
+    repDistanceM: Math.round(avgRepDistance / 50) * 50,
+    repPaceLabel: formatPace(avgRepPace),
+    repPaceRangeLabel: `${fmtPaceValue(fastest)} à ${fmtPaceValue(slowest)}/km`,
+    recoveryCount: recoveryLaps.length,
+    recoveryLabel,
+    targetPaceRange,
+    withinTarget,
+    hrDriftBpm,
+    paceTrendKind,
+    consistencyLabel,
+    matchesRecommendation: false,
+  };
 }
 
 /**

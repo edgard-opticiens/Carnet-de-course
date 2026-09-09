@@ -42,6 +42,45 @@ export default function LastRunCard({ run }: { run: LastRunReview }) {
             ))}
           </div>
 
+          {run.intervalAnalysis && (
+            <div className="lastrun-intervals">
+              <div className="lastrun-intervals-head">
+                Détail de la séance fractionnée · données de la montre
+              </div>
+              <div className="lastrun-intervals-grid">
+                <div className="lastrun-interval-item">
+                  <b>
+                    {run.intervalAnalysis.repCount} × {run.intervalAnalysis.repDistanceM} m
+                  </b>
+                  <span>répétitions</span>
+                </div>
+                <div className="lastrun-interval-item">
+                  <b>{run.intervalAnalysis.repPaceLabel}</b>
+                  <span>allure moyenne ({run.intervalAnalysis.repPaceRangeLabel})</span>
+                </div>
+                <div className="lastrun-interval-item">
+                  <b>{run.intervalAnalysis.recoveryCount}</b>
+                  <span>récupérations ({run.intervalAnalysis.recoveryLabel})</span>
+                </div>
+                {run.intervalAnalysis.targetPaceRange && (
+                  <div className="lastrun-interval-item">
+                    <b>{run.intervalAnalysis.targetPaceRange}</b>
+                    <span>zone cible habituelle</span>
+                  </div>
+                )}
+                {run.intervalAnalysis.hrDriftBpm !== null && (
+                  <div className="lastrun-interval-item">
+                    <b>
+                      {run.intervalAnalysis.hrDriftBpm >= 0 ? "+" : ""}
+                      {run.intervalAnalysis.hrDriftBpm} bpm
+                    </b>
+                    <span>dérive FC (1res → dernières reps)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="lastrun-cols">
             <div className="lastrun-col">
               <div className="lastrun-col-head good">Ce qui était bien</div>

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { ensureFreshToken, fetchAthleteZones, fetchRunningActivities } from "@/lib/strava";
+import { ensureFreshToken, fetchAthleteZones, fetchRunningActivities, fetchActivityLaps } from "@/lib/strava";
 import { buildDashboardData } from "@/lib/analysis";
 
 // Toujours ré-exécuter côté serveur : cette route lit une session par cookie et interroge
@@ -56,12 +56,24 @@ export async function GET() {
     // d'afficher un écran vide.
     const activitiesForDashboard = recentActivities.length > 0 ? recentActivities : allActivities.slice(-30);
 
+    // Détail des tours (laps) de la toute dernière sortie uniquement, pour pouvoir reconnaître une
+    // séance fractionnée structurée par la montre — un seul appel supplémentaire, jamais sur tout
+    // l'historique. Échec silencieux (activité sans laps, scope manquant...) : le reste du tableau
+    // de bord fonctionne normalement, seule l'analyse détaillée de la dernière sortie s'en passe.
+    const mostRecent = [...activitiesForDashboard].sort(
+      (a, b) => new Date(a.start_date_local).getTime() - new Date(b.start_date_local).getTime()
+    )[activitiesForDashboard.length - 1];
+    const lastRunLaps = mostRecent
+      ? await fetchActivityLaps(accessToken, mostRecent.id).catch(() => null)
+      : null;
+
     const data = buildDashboardData(
       activitiesForDashboard,
       zones,
       session.athleteName ?? "Athlète",
       new Date(),
-      allActivities
+      allActivities,
+      lastRunLaps
     );
     return NextResponse.json({ data });
   } catch (e: any) {

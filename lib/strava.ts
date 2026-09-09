@@ -161,3 +161,42 @@ export async function fetchAthleteZones(accessToken: string): Promise<AthleteZon
   if (!res.ok) return null;
   return res.json();
 }
+
+export interface StravaLap {
+  id: number;
+  lap_index: number;
+  name?: string;
+  distance: number; // mètres
+  moving_time: number; // secondes
+  elapsed_time: number;
+  average_speed: number; // m/s
+  max_speed?: number;
+  average_heartrate?: number;
+  max_heartrate?: number;
+  total_elevation_gain?: number;
+}
+
+/**
+ * Détail des tours (laps) d'une activité — c'est ce qui permet de repérer une séance fractionnée
+ * découpée par la montre (échauffement / répétitions / récupérations / retour au calme), même
+ * quand l'activité elle-même n'a pas été taguée manuellement comme "Séance" sur Strava. Appelé
+ * uniquement pour la toute dernière sortie, pas pour tout l'historique — un seul appel de plus,
+ * dans l'esprit économe en requêtes du reste de l'app. Retourne null en cas d'échec (activité
+ * sans laps, scope insuffisant, erreur réseau) plutôt que de faire échouer tout le tableau de bord.
+ */
+export async function fetchActivityLaps(
+  accessToken: string,
+  activityId: number
+): Promise<StravaLap[] | null> {
+  try {
+    const res = await fetch(`${STRAVA_API_BASE}/activities/${activityId}/laps`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const laps: StravaLap[] = await res.json();
+    return Array.isArray(laps) && laps.length > 0 ? laps : null;
+  } catch {
+    return null;
+  }
+}
