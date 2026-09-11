@@ -82,12 +82,22 @@ export type WorkoutTypeLabel = "sortie" | "course" | "sortie longue" | "séance"
  * reconnue automatiquement à partir des données de la montre, sans dépendre du tag manuel Strava.
  */
 export interface IntervalAnalysis {
+  /** Indique si les répétitions dominantes de la séance ont été identifiées par leur DISTANCE
+   * (ex. 8 x 400 m) ou par leur DURÉE (ex. 10 x 30 s) — les séances chronométrées ne se laissent
+   * pas regrouper de façon fiable par distance, d'où cette double lecture. */
+  mode: "distance" | "time";
   repCount: number;
   repDistanceM: number;
+  /** Durée moyenne d'une répétition, en secondes arrondies à 5 s — renseignée seulement quand
+   * `mode === "time"` (c'est alors l'unité pertinente à afficher, pas la distance). */
+  repTimeSec: number | null;
   repPaceLabel: string;
   repPaceRangeLabel: string;
   recoveryCount: number;
   recoveryLabel: string;
+  /** Note de structure en blocs quand la séance comporte plusieurs séries séparées par une pause
+   * plus longue qu'une récupération normale (ex. "2 blocs de 10 répétitions"), null sinon. */
+  blocksLabel: string | null;
   targetPaceRange: string | null;
   withinTarget: boolean | null;
   hrDriftBpm: number | null;
@@ -524,8 +534,15 @@ function buildLastRunReview(
   }
 
   if (intervalAnalysis) {
+    // Descripteur unité-consciente : "8 × 400 m" pour une séance en distance, "20 × 30 s" pour une
+    // séance chronométrée — évite d'afficher une distance qui n'a pas de sens pour ce format.
+    const repDescriptor =
+      intervalAnalysis.mode === "time"
+        ? `${intervalAnalysis.repCount} × ${intervalAnalysis.repTimeSec} s`
+        : `${intervalAnalysis.repCount} × ${intervalAnalysis.repDistanceM} m`;
+    const blocksSuffix = intervalAnalysis.blocksLabel ? ` (${intervalAnalysis.blocksLabel})` : "";
     positives.push(
-      `Séance fractionnée reconnue à partir des données de la montre : ${intervalAnalysis.repCount} × ${intervalAnalysis.repDistanceM} m à ${intervalAnalysis.repPaceLabel} (entre ${intervalAnalysis.repPaceRangeLabel}), récupération ${intervalAnalysis.recoveryLabel}.`
+      `Séance fractionnée reconnue à partir des données de la montre : ${repDescriptor}${blocksSuffix} à ${intervalAnalysis.repPaceLabel} (entre ${intervalAnalysis.repPaceRangeLabel}), récupération ${intervalAnalysis.recoveryLabel}.`
     );
     if (intervalAnalysis.targetPaceRange && intervalAnalysis.withinTarget) {
       positives.push(
@@ -560,7 +577,7 @@ function buildLastRunReview(
       const tc = intervalAnalysis.targetComparison;
       const repsLabel = tc.repsMin === tc.repsMax ? `${tc.repsMin}` : `${tc.repsMin} à ${tc.repsMax}`;
       const targetLabel = `${repsLabel} x ${tc.distanceM} m${tc.recoveryLabel ? ` (récup. ${tc.recoveryLabel})` : ""}`;
-      const doneLabel = `${intervalAnalysis.repCount} x ${intervalAnalysis.repDistanceM} m`;
+      const doneLabel = repDescriptor;
       if (tc.verdict === "conforme") {
         positives.push(
           `Format conforme à la séance actuellement proposée (${targetLabel}) : tu as fait ${doneLabel} — belle mise en application du programme.`
@@ -575,7 +592,7 @@ function buildLastRunReview(
         );
       } else {
         positives.push(
-          `Format différent de la séance proposée (${targetLabel}) : tu as travaillé sur du ${intervalAnalysis.repDistanceM} m — pas un souci en soi, juste un format différent de la suggestion du moment.`
+          `Format différent de la séance proposée (${targetLabel}) : tu as travaillé sur du ${doneLabel} — pas un souci en soi, juste un format différent de la suggestion du moment.`
         );
       }
     } else if (intervalAnalysis.matchesRecommendation) {
@@ -819,18 +836,54 @@ interface LapWork {
   hr: number | null;
 }
 
+function roundToStep(value: number, step: number): number {
+  return Math.round(value / step) * step;
+}
+
+/** Coefficient de variation (écart-type / moyenne) : mesure à quel point une série de valeurs est
+ * restée constante. Sert à repérer quelle dimension (distance ou temps) a été prescrite lors d'une
+ * séance fractionnée — la dimension imposée varie peu d'une répétition à l'autre (aux ~10-20 m ou
+ * quelques secondes de bruit GPS/chrono près), tandis que l'autre dérive avec la fatigue. */
+function coefficientOfVariation(values: number[]): number {
+  if (values.length === 0) return 0;
+  const mean = values.reduce((s, v) => s + v, 0) / values.length;
+  if (mean === 0) return 0;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance) / mean;
+}
+
+/** Regroupe des tours "travail" par une clé (distance ou temps arrondis) et renvoie le plus gros
+ * groupe — la répétition dominante de la séance. */
+function dominantCluster(candidates: LapWork[], keyFn: (l: LapWork) => number): LapWork[] {
+  const groups = new Map<number, LapWork[]>();
+  for (const c of candidates) {
+    const key = keyFn(c);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  let best: LapWork[] = [];
+  for (const g of groups.values()) {
+    if (g.length > best.length) best = g;
+  }
+  return best;
+}
+
 /**
  * Reconnaît une structure fractionnée (répétitions + récupérations) dans les tours (laps)
  * enregistrés par la montre, sans dépendre du tag manuel Strava. Heuristique validée à la main sur
  * une vraie séance de l'athlète (échauffement 20', 8 × 400 m / 200 m récup, retour au calme) :
  * - un tour "travail" est nettement plus rapide que l'allure médiane de la sortie (≤ 92 %) et fait
- *   entre 100 m et 2 km — ce qui exclut d'emblée l'échauffement et le retour au calme ;
- * - on regroupe ces tours par distance arrondie au 50 m le plus proche pour isoler la distance de
- *   répétition dominante (8 × 400 m plutôt qu'un mélange de fragments) ; il en faut au moins 3 pour
- *   parler de séance structurée plutôt que de simples accélérations isolées ;
+ *   entre 50 m et 3 km — ce qui exclut d'emblée l'échauffement et le retour au calme ;
+ * - certaines séances sont prescrites en DISTANCE (8 × 400 m) et d'autres en TEMPS (10 × 30 s) : on
+ *   regroupe les tours candidats des deux façons (distance arrondie, durée arrondie) et on retient
+ *   celle qui explique le plus de répétitions de façon cohérente, plutôt que de supposer un format
+ *   par distance qui casserait des répétitions chronométrées en fragments de distances différentes ;
+ *   il faut au moins 3 répétitions dans le groupe retenu pour parler de séance structurée ;
  * - un tour "récupération" est un tour non-travail directement adjacent (index ± 1) à un tour de
- *   travail, et pas trop long (≤ max(600 m, 1,5 × distance de répétition)) — ce qui exclut à nouveau
- *   l'échauffement et le retour au calme, qui sont adjacents mais bien plus longs.
+ *   travail, et pas trop long au regard de l'unité retenue (distance ou temps) — ce qui exclut à
+ *   nouveau l'échauffement et le retour au calme, adjacents mais bien plus longs ;
+ * - quand la séance comporte plusieurs blocs (ex. "10 x 30 s à répéter 2 fois"), un écart entre deux
+ *   répétitions de travail plus grand qu'une simple récupération signale une coupure entre blocs.
  */
 function analyzeIntervalStructure(
   laps: StravaLap[],
@@ -848,41 +901,101 @@ function analyzeIntervalStructure(
       pace: paceFromSpeed(l.average_speed),
       hr: typeof l.average_heartrate === "number" ? l.average_heartrate : null,
     }))
-    .filter((l) => l.pace > 0 && l.distance > 0);
+    .filter((l) => l.pace > 0 && l.distance > 0 && l.time > 0);
   if (items.length < 5) return null;
 
   const medianPace = median(items.map((l) => l.pace));
   const workCandidates = items.filter(
-    (l) => l.pace <= medianPace * 0.92 && l.distance >= 100 && l.distance <= 2000
+    (l) => l.pace <= medianPace * 0.92 && l.distance >= 50 && l.distance <= 3000
   );
   if (workCandidates.length < 3) return null;
 
-  const roundTo50 = (d: number) => Math.round(d / 50) * 50;
-  const groups = new Map<number, LapWork[]>();
-  for (const w of workCandidates) {
-    const key = roundTo50(w.distance);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(w);
-  }
-  let bestGroup: LapWork[] = [];
-  for (const group of groups.values()) {
-    if (group.length > bestGroup.length) bestGroup = group;
+  // ---- on essaie les deux lectures possibles (distance / temps) et on garde celle qui regroupe
+  // le plus de répétitions de façon cohérente ----
+  const medianCandDist = median(workCandidates.map((c) => c.distance));
+  const distStep = medianCandDist < 250 ? 25 : medianCandDist < 700 ? 50 : 100;
+  const distGroup = dominantCluster(workCandidates, (l) => roundToStep(l.distance, distStep));
+
+  const medianCandTime = median(workCandidates.map((c) => c.time));
+  const timeStep = medianCandTime < 60 ? 5 : medianCandTime < 180 ? 10 : 30;
+  const timeGroup = dominantCluster(workCandidates, (l) => roundToStep(l.time, timeStep));
+
+  let mode: IntervalAnalysis["mode"];
+  let bestGroup: LapWork[];
+  if (timeGroup.length > distGroup.length * 1.15) {
+    mode = "time";
+    bestGroup = timeGroup;
+  } else if (distGroup.length > timeGroup.length * 1.15) {
+    mode = "distance";
+    bestGroup = distGroup;
+  } else {
+    // Cas ambigu (les deux lectures expliquent un nombre similaire de répétitions) : on retient la
+    // dimension restée la plus constante d'une répétition à l'autre — c'est presque toujours celle
+    // qui a été prescrite (une distance fixe varie peu au fil de la séance, un temps fixe non plus,
+    // alors que la dimension "libre" dérive avec la fatigue). On calcule cet écart uniquement sur
+    // les répétitions retenues par l'une ou l'autre lecture (l'union des deux groupes dominants),
+    // pas sur tous les candidats "travail" bruts qui peuvent encore contenir un tour isolé (fin
+    // d'échauffement un peu vive, par ex.) non représentatif de la structure répétée. En cas
+    // d'égalité quasi parfaite, on retient la distance, format le plus courant dans les séances
+    // actuellement proposées par l'app.
+    const unionByIndex = new Map<number, LapWork>();
+    for (const l of [...distGroup, ...timeGroup]) unionByIndex.set(l.index, l);
+    const unionForCV = [...unionByIndex.values()];
+    const distCV = coefficientOfVariation(unionForCV.map((c) => c.distance));
+    const timeCV = coefficientOfVariation(unionForCV.map((c) => c.time));
+    if (timeCV < distCV * 0.9 && timeGroup.length > 0) {
+      mode = "time";
+      bestGroup = timeGroup;
+    } else {
+      mode = "distance";
+      bestGroup = distGroup.length > 0 ? distGroup : timeGroup;
+    }
   }
   if (bestGroup.length < 3) return null;
 
   const workIndexes = new Set(bestGroup.map((w) => w.index));
   const avgRepDistance = bestGroup.reduce((s, w) => s + w.distance, 0) / bestGroup.length;
-  const recoveryLimit = Math.max(600, avgRepDistance * 1.5);
+  const avgRepTimeSec = bestGroup.reduce((s, w) => s + w.time, 0) / bestGroup.length;
+  const recoveryMaxDistance = Math.max(600, avgRepDistance * 1.5);
+  // Plafond plus serré que pour la distance : une vraie récupération entre deux répétitions
+  // chronométrées est généralement proche de la durée de travail elle-même (30 s de récup pour
+  // 30 s de travail), alors qu'une pause plus longue entre deux blocs (ex. "10x30/30 à répéter 2
+  // fois") ne doit pas être comptée comme une simple récupération.
+  const recoveryMaxTime = Math.max(60, avgRepTimeSec * 2.5);
 
   const recoveryIndexes = new Set<number>();
   for (const idx of workIndexes) {
     for (const adjIdx of [idx - 1, idx + 1]) {
       if (workIndexes.has(adjIdx)) continue;
       const cand = items.find((l) => l.index === adjIdx);
-      if (cand && cand.distance <= recoveryLimit) recoveryIndexes.add(adjIdx);
+      if (!cand) continue;
+      const isValidRecovery = mode === "time" ? cand.time <= recoveryMaxTime : cand.distance <= recoveryMaxDistance;
+      if (isValidRecovery) recoveryIndexes.add(adjIdx);
     }
   }
   const recoveryLaps = items.filter((l) => recoveryIndexes.has(l.index));
+
+  // ---- détection de blocs : un écart de plus d'un tour entre deux répétitions consécutives (au
+  // lieu d'une simple récupération) signale une coupure entre séries, ex. "2 x (10 x 30 s)" ----
+  const workIdxSorted = [...workIndexes].sort((a, b) => a - b);
+  const blockSizes: number[] = [];
+  let currentBlockCount = 1;
+  for (let i = 1; i < workIdxSorted.length; i++) {
+    if (workIdxSorted[i] - workIdxSorted[i - 1] > 2) {
+      blockSizes.push(currentBlockCount);
+      currentBlockCount = 1;
+    } else {
+      currentBlockCount++;
+    }
+  }
+  blockSizes.push(currentBlockCount);
+  let blocksLabel: string | null = null;
+  if (blockSizes.length >= 2) {
+    const allEqual = blockSizes.every((n) => Math.abs(n - blockSizes[0]) <= 1);
+    blocksLabel = allEqual
+      ? `${blockSizes.length} blocs de ${blockSizes[0]} répétitions`
+      : `${blockSizes.length} blocs (${blockSizes.join(" + ")} répétitions)`;
+  }
 
   const repPacesAsc = bestGroup.map((w) => w.pace).sort((a, b) => a - b);
   const avgRepPace = repPacesAsc.reduce((s, p) => s + p, 0) / repPacesAsc.length;
@@ -936,18 +1049,23 @@ function analyzeIntervalStructure(
       ? recoveryLaps.reduce((s, l) => s + l.distance, 0) / recoveryLaps.length
       : null;
   const recoveryLabel =
-    avgRecoveryTime !== null && avgRecoveryDist !== null
-      ? `≈ ${Math.round(avgRecoveryDist)} m en ${formatDuration(Math.round(avgRecoveryTime))}`
-      : "non détaillée";
+    avgRecoveryTime === null || avgRecoveryDist === null
+      ? "non détaillée"
+      : mode === "time"
+      ? `≈ ${formatDuration(Math.round(avgRecoveryTime))} (${Math.round(avgRecoveryDist)} m)`
+      : `≈ ${Math.round(avgRecoveryDist)} m en ${formatDuration(Math.round(avgRecoveryTime))}`;
 
-  const repDistanceM = Math.round(avgRepDistance / 50) * 50;
+  const repDistanceM = Math.round(avgRepDistance / (avgRepDistance < 200 ? 10 : 50)) * (avgRepDistance < 200 ? 10 : 50);
+  const repTimeSec = mode === "time" ? Math.round(avgRepTimeSec / 5) * 5 : null;
 
   // ---- comparaison fine avec le format précis de la séance actuellement proposée ----
   // On choisit, parmi les formats possibles (400 m et/ou 1000 m selon la phase), celui dont la
   // distance est la plus proche de ce qui a été réellement couru ; au-delà de 25 % d'écart, on
   // considère qu'il ne s'agit pas du même format plutôt que de forcer un rapprochement trompeur.
+  // Les formats proposés par l'app sont tous prescrits en distance : une séance identifiée comme
+  // chronométrée (mode "time") n'est donc pas comparée à ces formats, ce serait trompeur.
   let targetComparison: IntervalAnalysis["targetComparison"] = null;
-  if (targetOptions && targetOptions.length > 0) {
+  if (mode === "distance" && targetOptions && targetOptions.length > 0) {
     let closest = targetOptions[0];
     let closestDelta = Math.abs(repDistanceM - closest.distanceM) / closest.distanceM;
     for (const opt of targetOptions.slice(1)) {
@@ -1001,12 +1119,15 @@ function analyzeIntervalStructure(
   }
 
   return {
+    mode,
     repCount: bestGroup.length,
     repDistanceM,
+    repTimeSec,
     repPaceLabel: formatPace(avgRepPace),
     repPaceRangeLabel: `${fmtPaceValue(fastest)} à ${fmtPaceValue(slowest)}/km`,
     recoveryCount: recoveryLaps.length,
     recoveryLabel,
+    blocksLabel,
     targetPaceRange,
     withinTarget,
     hrDriftBpm,

@@ -50,9 +50,15 @@ export default function LastRunCard({ run }: { run: LastRunReview }) {
               <div className="lastrun-intervals-grid">
                 <div className="lastrun-interval-item">
                   <b>
-                    {run.intervalAnalysis.repCount} × {run.intervalAnalysis.repDistanceM} m
+                    {run.intervalAnalysis.repCount} ×{" "}
+                    {run.intervalAnalysis.mode === "time"
+                      ? `${run.intervalAnalysis.repTimeSec} s`
+                      : `${run.intervalAnalysis.repDistanceM} m`}
                   </b>
-                  <span>répétitions</span>
+                  <span>
+                    répétitions
+                    {run.intervalAnalysis.blocksLabel ? ` · ${run.intervalAnalysis.blocksLabel}` : ""}
+                  </span>
                 </div>
                 <div className="lastrun-interval-item">
                   <b>{run.intervalAnalysis.repPaceLabel}</b>
