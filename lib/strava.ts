@@ -200,3 +200,53 @@ export async function fetchActivityLaps(
     return null;
   }
 }
+
+/** Tracé seconde par seconde d'une activité (temps/distance cumulés, vitesse lissée, FC). */
+export interface StravaStreamSet {
+  time: number[]; // secondes écoulées depuis le début
+  distance: number[]; // mètres, cumulés
+  velocity_smooth?: number[]; // m/s, lissée par Strava
+  heartrate?: number[]; // bpm
+}
+
+/**
+ * Tracé détaillé de la toute dernière sortie — sert de filet de sécurité quand les tours (laps)
+ * enregistrés par la montre ne suffisent pas à isoler une séance fractionnée (pas de tours,
+ * athlète qui n'a pas utilisé le bouton lap, auto-lap mal aligné avec les efforts réels...). Comme
+ * pour les laps, appelé uniquement pour la dernière sortie, jamais sur tout l'historique. Retourne
+ * null en cas d'échec plutôt que de faire échouer tout le tableau de bord.
+ */
+export async function fetchActivityStreams(
+  accessToken: string,
+  activityId: number
+): Promise<StravaStreamSet | null> {
+  try {
+    const params = new URLSearchParams({
+      keys: "time,distance,velocity_smooth,heartrate",
+      key_by_type: "true",
+      resolution: "high",
+    });
+    const res = await fetch(`${STRAVA_API_BASE}/activities/${activityId}/streams?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const raw = await res.json();
+    const time = raw?.time?.data;
+    const distance = raw?.distance?.data;
+    if (!Array.isArray(time) || !Array.isArray(distance) || time.length < 10 || distance.length !== time.length) {
+      return null;
+    }
+    const velocity_smooth =
+      Array.isArray(raw?.velocity_smooth?.data) && raw.velocity_smooth.data.length === time.length
+        ? raw.velocity_smooth.data
+        : undefined;
+    const heartrate =
+      Array.isArray(raw?.heartrate?.data) && raw.heartrate.data.length === time.length
+        ? raw.heartrate.data
+        : undefined;
+    return { time, distance, velocity_smooth, heartrate };
+  } catch {
+    return null;
+  }
+}

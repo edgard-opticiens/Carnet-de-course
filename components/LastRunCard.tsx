@@ -45,7 +45,10 @@ export default function LastRunCard({ run }: { run: LastRunReview }) {
           {run.intervalAnalysis && (
             <div className="lastrun-intervals">
               <div className="lastrun-intervals-head">
-                Détail de la séance fractionnée · données de la montre
+                Détail de la séance fractionnée ·{" "}
+                {run.intervalAnalysis.detectionSource === "stream"
+                  ? "reconstituée à partir du tracé GPS (tours de montre insuffisants)"
+                  : "données de la montre"}
               </div>
               <div className="lastrun-intervals-grid">
                 <div className="lastrun-interval-item">

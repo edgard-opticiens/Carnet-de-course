@@ -1,4 +1,4 @@
-import { AthleteZones, StravaActivity, StravaLap } from "./strava";
+import { AthleteZones, StravaActivity, StravaLap, StravaStreamSet } from "./strava";
 
 export interface MonthlyPoint {
   month: string; // YYYY-MM
@@ -86,6 +86,11 @@ export interface IntervalAnalysis {
    * (ex. 8 x 400 m) ou par leur DURÉE (ex. 10 x 30 s) — les séances chronométrées ne se laissent
    * pas regrouper de façon fiable par distance, d'où cette double lecture. */
   mode: "distance" | "time";
+  /** D'où vient la structure détectée : "laps" quand les tours enregistrés par la montre
+   * suffisaient, "stream" quand il a fallu reconstruire des tronçons à partir du tracé seconde
+   * par seconde (pas de tours exploitables) — affiché à l'utilisateur pour rester transparent sur
+   * la fiabilité de la détection. */
+  detectionSource: "laps" | "stream";
   repCount: number;
   repDistanceM: number;
   /** Durée moyenne d'une répétition, en secondes arrondies à 5 s — renseignée seulement quand
@@ -241,7 +246,8 @@ export function buildDashboardData(
   athleteName: string,
   now: Date = new Date(),
   allActivities?: StravaActivity[],
-  lastRunLaps?: StravaLap[] | null
+  lastRunLaps?: StravaLap[] | null,
+  lastRunStreams?: StravaStreamSet | null
 ): DashboardData {
   const sorted = [...activities].sort(
     (a, b) => new Date(a.start_date_local).getTime() - new Date(b.start_date_local).getTime()
@@ -413,7 +419,15 @@ export function buildDashboardData(
   const raceEstimates = buildRaceEstimates(sorted, now);
 
   // ---- compte rendu de la toute dernière sortie ----
-  const lastRun = buildLastRunReview(sorted, zones, recommendations, paceByZone, lastRunLaps, raceEstimates);
+  const lastRun = buildLastRunReview(
+    sorted,
+    zones,
+    recommendations,
+    paceByZone,
+    lastRunLaps,
+    raceEstimates,
+    lastRunStreams
+  );
 
   const records = buildRecords(sortedAll);
 
@@ -469,7 +483,8 @@ function buildLastRunReview(
   recommendations: Recommendations,
   paceByZone: Map<number, number[]>,
   lastRunLaps?: StravaLap[] | null,
-  raceEstimates?: RaceEstimates | null
+  raceEstimates?: RaceEstimates | null,
+  lastRunStreams?: StravaStreamSet | null
 ): LastRunReview | null {
   if (sorted.length === 0) return null;
   const last = sorted[sorted.length - 1];
@@ -482,9 +497,24 @@ function buildLastRunReview(
   // le reste de l'analyse (repos conseillé, prochaine sortie...), même si Strava dit autre chose.
   const fractionneCard = recommendations.workouts.find((w) => w.key === "fractionne") ?? null;
   const fitnessRef = raceEstimates ? { refDistKm: raceEstimates.refDistKm, refTimeMin: raceEstimates.refTimeMin } : null;
-  const intervalAnalysis = lastRunLaps
-    ? analyzeIntervalStructure(lastRunLaps, paceByZone, fractionneCard?.intervalTarget ?? null, fitnessRef)
+  let intervalAnalysis = lastRunLaps
+    ? analyzeIntervalStructure(lastRunLaps, paceByZone, fractionneCard?.intervalTarget ?? null, fitnessRef, "laps")
     : null;
+  // Filet de sécurité : si les tours de la montre ne suffisent pas à isoler une structure (pas de
+  // tours, bouton lap non utilisé, auto-lap mal aligné avec les efforts réels...), on retente à
+  // partir du tracé seconde par seconde avant de conclure qu'il n'y a pas de séance structurée.
+  if (!intervalAnalysis && lastRunStreams) {
+    const syntheticLaps = buildSyntheticLapsFromStream(lastRunStreams);
+    if (syntheticLaps) {
+      intervalAnalysis = analyzeIntervalStructure(
+        syntheticLaps,
+        paceByZone,
+        fractionneCard?.intervalTarget ?? null,
+        fitnessRef,
+        "stream"
+      );
+    }
+  }
   if (intervalAnalysis) {
     intervalAnalysis.matchesRecommendation = fractionneCard !== null;
   }
@@ -541,8 +571,12 @@ function buildLastRunReview(
         ? `${intervalAnalysis.repCount} × ${intervalAnalysis.repTimeSec} s`
         : `${intervalAnalysis.repCount} × ${intervalAnalysis.repDistanceM} m`;
     const blocksSuffix = intervalAnalysis.blocksLabel ? ` (${intervalAnalysis.blocksLabel})` : "";
+    const sourceLabel =
+      intervalAnalysis.detectionSource === "stream"
+        ? "à partir du tracé GPS seconde par seconde (les tours enregistrés par la montre ne suffisaient pas à isoler la structure)"
+        : "à partir des tours (laps) enregistrés par la montre";
     positives.push(
-      `Séance fractionnée reconnue à partir des données de la montre : ${repDescriptor}${blocksSuffix} à ${intervalAnalysis.repPaceLabel} (entre ${intervalAnalysis.repPaceRangeLabel}), récupération ${intervalAnalysis.recoveryLabel}.`
+      `Séance fractionnée reconnue ${sourceLabel} : ${repDescriptor}${blocksSuffix} à ${intervalAnalysis.repPaceLabel} (entre ${intervalAnalysis.repPaceRangeLabel}), récupération ${intervalAnalysis.recoveryLabel}.`
     );
     if (intervalAnalysis.targetPaceRange && intervalAnalysis.withinTarget) {
       positives.push(
@@ -869,6 +903,113 @@ function dominantCluster(candidates: LapWork[], keyFn: (l: LapWork) => number): 
 }
 
 /**
+ * Reconstruit des "tours" synthétiques à partir du tracé seconde par seconde (distance/vitesse/FC)
+ * d'une activité, pour les cas où les tours réellement enregistrés par la montre ne suffisent pas à
+ * isoler une structure fractionnée (activité sans tours, athlète qui n'a pas utilisé le bouton lap,
+ * auto-lap de la montre mal aligné avec les efforts réels...). On segmente le tracé en tronçons
+ * homogènes rapides/lents à partir de l'allure lissée (moyenne glissante pour amortir le bruit
+ * GPS/capteur), puis ces tronçons sont réinjectés dans `analyzeIntervalStructure` exactement comme
+ * de vrais tours de montre — seule la provenance change, et elle est conservée (`detectionSource`)
+ * pour rester transparent avec l'utilisateur sur la fiabilité de la détection.
+ */
+function buildSyntheticLapsFromStream(streams: StravaStreamSet): StravaLap[] | null {
+  const { time, distance } = streams;
+  const n = time.length;
+  if (n < 10 || distance.length !== n) return null;
+  const velocity = streams.velocity_smooth && streams.velocity_smooth.length === n ? streams.velocity_smooth : null;
+  const heartrate = streams.heartrate && streams.heartrate.length === n ? streams.heartrate : null;
+
+  // Allure instantanée : vitesse lissée fournie par Strava si disponible, sinon dérivée des deltas
+  // distance/temps entre points consécutifs.
+  const instPace: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    if (velocity && velocity[i] > 0) {
+      instPace[i] = paceFromSpeed(velocity[i]);
+    } else if (i > 0) {
+      const dt = time[i] - time[i - 1];
+      const dd = distance[i] - distance[i - 1];
+      instPace[i] = dt > 0 && dd > 0 ? paceFromSpeed(dd / dt) : 0;
+    }
+  }
+
+  // Lissage par moyenne glissante (±5 échantillons) pour ne pas fragmenter la séance à cause d'une
+  // oscillation d'allure d'une seconde.
+  const smoothWindow = 3;
+  const smoothPace: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(0, i - smoothWindow); j <= Math.min(n - 1, i + smoothWindow); j++) {
+      if (instPace[j] > 0) {
+        sum += instPace[j];
+        count++;
+      }
+    }
+    smoothPace[i] = count > 0 ? sum / count : 0;
+  }
+
+  const validPaces = smoothPace.filter((p) => p > 0);
+  if (validPaces.length < 10) return null;
+  const workThreshold = median(validPaces) * 0.92;
+
+  // Segmentation en tronçons homogènes "rapide" / "pas rapide".
+  const rawSegments: { isWork: boolean; startIdx: number; endIdx: number }[] = [];
+  let curIsWork: boolean | null = null;
+  let segStart = 0;
+  for (let i = 0; i < n; i++) {
+    const isWork = smoothPace[i] > 0 && smoothPace[i] <= workThreshold;
+    if (curIsWork === null) {
+      curIsWork = isWork;
+      segStart = i;
+    } else if (isWork !== curIsWork) {
+      rawSegments.push({ isWork: curIsWork, startIdx: segStart, endIdx: i - 1 });
+      curIsWork = isWork;
+      segStart = i;
+    }
+  }
+  if (curIsWork !== null) rawSegments.push({ isWork: curIsWork, startIdx: segStart, endIdx: n - 1 });
+
+  // Fusion des tronçons trop courts (bruit résiduel) avec le tronçon précédent.
+  const minSegSec = 5;
+  const merged: { distance: number; time: number; hrSum: number; hrCount: number }[] = [];
+  for (const raw of rawSegments) {
+    const segTime = time[raw.endIdx] - time[raw.startIdx];
+    const segDist = distance[raw.endIdx] - distance[raw.startIdx];
+    let hrSum = 0;
+    let hrCount = 0;
+    if (heartrate) {
+      for (let i = raw.startIdx; i <= raw.endIdx; i++) {
+        if (typeof heartrate[i] === "number") {
+          hrSum += heartrate[i];
+          hrCount++;
+        }
+      }
+    }
+    if (merged.length > 0 && segTime < minSegSec) {
+      const prev = merged[merged.length - 1];
+      prev.distance += segDist;
+      prev.time += segTime;
+      prev.hrSum += hrSum;
+      prev.hrCount += hrCount;
+    } else {
+      merged.push({ distance: segDist, time: segTime, hrSum, hrCount });
+    }
+  }
+  const clean = merged.filter((s) => s.time > 0 && s.distance > 0);
+  if (clean.length < 5) return null;
+
+  return clean.map((s, i) => ({
+    id: i,
+    lap_index: i + 1,
+    distance: s.distance,
+    moving_time: Math.max(1, Math.round(s.time)),
+    elapsed_time: Math.max(1, Math.round(s.time)),
+    average_speed: s.distance / s.time,
+    average_heartrate: s.hrCount > 0 ? Math.round(s.hrSum / s.hrCount) : undefined,
+  }));
+}
+
+/**
  * Reconnaît une structure fractionnée (répétitions + récupérations) dans les tours (laps)
  * enregistrés par la montre, sans dépendre du tag manuel Strava. Heuristique validée à la main sur
  * une vraie séance de l'athlète (échauffement 20', 8 × 400 m / 200 m récup, retour au calme) :
@@ -889,7 +1030,8 @@ function analyzeIntervalStructure(
   laps: StravaLap[],
   paceByZone: Map<number, number[]>,
   targetOptions: FractionneTargetOption[] | null,
-  fitnessRef: { refDistKm: number; refTimeMin: number } | null
+  fitnessRef: { refDistKm: number; refTimeMin: number } | null,
+  detectionSource: "laps" | "stream" = "laps"
 ): IntervalAnalysis | null {
   if (!laps || laps.length < 5) return null;
 
@@ -1120,6 +1262,7 @@ function analyzeIntervalStructure(
 
   return {
     mode,
+    detectionSource,
     repCount: bestGroup.length,
     repDistanceM,
     repTimeSec,
