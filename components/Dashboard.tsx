@@ -9,6 +9,7 @@ import RacesTable from "./RacesTable";
 import WorkoutCards from "./WorkoutCards";
 import RecordsGrid from "./RecordsGrid";
 import GoalTimeline from "./GoalTimeline";
+import InsightsSection from "./InsightsSection";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
@@ -77,6 +78,8 @@ export default function Dashboard({
       <div className="wrap">
         <StatGrid data={data} />
       </div>
+
+      <InsightsSection refreshKey={updatedAt?.getTime()} />
 
       <CompareCard data={data} />
 

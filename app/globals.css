@@ -321,3 +321,27 @@ footer { padding: 32px 0 56px; color: var(--ink-muted); font-size: 12.5px; line-
 footer a { color: var(--accent); text-decoration: none; }
 
 ::selection { background: var(--accent-soft); }
+
+/* ---- Section « Analyses » (components/InsightsSection.tsx) ---- */
+.ins-note { color: var(--ink-2); font-size: 14.5px; }
+.ins-headlines { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.ins-headline { border-left: 4px solid var(--hairline); padding: 18px 20px; }
+.ins-headline.tone-good { border-left-color: var(--good); }
+.ins-headline.tone-warn { border-left-color: var(--warning); }
+.ins-headline.tone-info { border-left-color: var(--blue); }
+.ins-headline-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.ins-headline p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--ink-2); }
+.ins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.ins-card-title { font-size: 15px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; flex-wrap: wrap; }
+.ins-sub { font-size: 13px; color: var(--ink-2); line-height: 1.55; margin: 0 0 14px; }
+.ins-meta { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
+.ins-bars { display: flex; align-items: flex-end; gap: 5px; height: 110px; }
+.ins-bar-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; }
+.ins-bar-stack { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.ins-stack { display: flex; height: 30px; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.ins-stack > div { display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 700; color: #fff; }
+.ins-pacing { border-top: 1px solid var(--hairline); margin-top: 18px; }
+.ins-pacing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 14px; margin-top: 10px; }
+.ins-big { font-size: 28px; line-height: 1; }
+table.ins-table { min-width: 0; }
+@media (max-width: 860px) { .ins-grid { grid-template-columns: 1fr; } }

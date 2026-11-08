@@ -76,9 +76,32 @@ d'activités.
 - Une trajectoire d'entraînement générique si l'utilisateur indique une date d'objectif (stockée
   uniquement dans son navigateur).
 
+## Analyses kilomètre par kilomètre (section « Ce que disent vraiment tes données »)
+
+Calculées par `lib/insights.ts` à partir du détail de chaque sortie des 13 dernières semaines
+(route `/api/insights`, une requête Strava par sortie, 45 sorties maximum) :
+
+- **Km rapides hors séance** : un km est « rapide » s'il passe 20 s/km sous ton allure habituelle
+  (médiane de tous tes km). Les sorties dont le titre évoque une séance (fractionné, tempo, côtes,
+  « 8x400 »…) ou taguées Séance/Course sur Strava sont comptées à part des sorties libres.
+- **Vrais meilleurs efforts** (1 km, 1 mile, 5, 10, 15 km) : les meilleurs efforts calculés par Strava
+  *à l'intérieur* des sorties, avec la sortie d'origine et l'évolution (6 dernières semaines vs 7 d'avant).
+- **Charge** : 7 derniers jours contre moyenne hebdo sur 28 jours (effort relatif Strava, ou minutes
+  de course à défaut). Les seuils 0,8 / 1,3 / 1,5 sont des repères usuels, pas des seuils médicaux.
+- **Intensité** : part du temps par zone de FC (zones Strava ; signalé quand elles sont estimées par l'âge).
+- **Gestion de l'allure** : sorties libres d'au moins 8 km finies plus vite / régulières / plus lentes
+  en seconde moitié, et dérive cardiaque médiane.
+- **Type de sortie** déduit du titre (« poussette », « canicross »).
+
 ## Limites connues
 
-- Pas de base de données : rien n'est mis en cache, chaque chargement de dashboard refait les
+- Le détail des sorties est gardé dans un **cache mémoire volatil** du serveur (12 h, uniquement
+  allure/FC/dénivelé par km et meilleurs efforts, jamais de trace GPS ni de token) pour éviter de
+  relire Strava à chaque chargement. Il disparaît au redémarrage du serveur. Premier chargement : une
+  trentaine de requêtes Strava (limite : 100 / 15 min) ; si la limite est atteinte, l'analyse
+  s'affiche sur les sorties déjà lues et le signale.
+
+- Pas de base de données : le dashboard principal refait les
   appels à l'API Strava (quelques centaines de ms à quelques secondes selon le volume d'activités).
 - Fenêtre d'analyse fixée à 18 mois (modifiable dans `app/api/dashboard-data/route.ts`,
   constante `MONTHS_BACK`).
