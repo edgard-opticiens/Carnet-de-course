@@ -103,6 +103,7 @@ export interface StravaActivity {
   has_heartrate?: boolean;
   achievement_count?: number;
   pr_count?: number;
+  suffer_score?: number | null; // "Effort relatif" Strava, absent sans abonnement
 }
 
 /** Récupère toutes les activités de course/trail entre `afterUnix` et maintenant. */
@@ -248,5 +249,57 @@ export async function fetchActivityStreams(
     return { time, distance, velocity_smooth, heartrate };
   } catch {
     return null;
+  }
+}
+
+
+/** Un kilomètre (split) tel que renvoyé par Strava dans le détail d'une activité. */
+export interface StravaSplit {
+  split: number;
+  distance: number; // mètres (≈1000, le dernier est partiel)
+  moving_time: number; // secondes
+  elapsed_time: number;
+  elevation_difference?: number;
+  average_speed?: number;
+  average_heartrate?: number;
+}
+
+/** Meilleur effort calculé par Strava à l'intérieur d'une sortie (ex. le 5 km le plus rapide d'un 16 km). */
+export interface StravaBestEffort {
+  name: string; // "400m", "1k", "1 mile", "5k", "10k", "15k"...
+  distance: number;
+  elapsed_time: number;
+  moving_time?: number;
+}
+
+export interface StravaActivityDetail {
+  id: number;
+  splits_metric?: StravaSplit[];
+  best_efforts?: StravaBestEffort[];
+}
+
+export type DetailResult =
+  | { ok: true; detail: StravaActivityDetail }
+  | { ok: false; rateLimited: boolean };
+
+/**
+ * Détail d'une seule activité : c'est lui qui contient les kilomètres un par un et les meilleurs
+ * efforts internes. Un appel par sortie, donc à utiliser avec parcimonie (cache + fenêtre bornée).
+ */
+export async function fetchActivityDetail(
+  accessToken: string,
+  activityId: number
+): Promise<DetailResult> {
+  try {
+    const res = await fetch(`${STRAVA_API_BASE}/activities/${activityId}?include_all_efforts=false`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (res.status === 429) return { ok: false, rateLimited: true };
+    if (!res.ok) return { ok: false, rateLimited: false };
+    const detail: StravaActivityDetail = await res.json();
+    return { ok: true, detail };
+  } catch {
+    return { ok: false, rateLimited: false };
   }
 }
